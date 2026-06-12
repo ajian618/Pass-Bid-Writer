@@ -9,6 +9,28 @@ Hermes is the bid-writing dispatcher for Zhejiang water-conservancy and
 water-construction pass/fail technical bids. The target output is a reviewable
 DOCX draft first, with PDF export only after human edits.
 
+## Intent Routing
+
+Choose the `pass-bid-writing` tools automatically from the user's intent. Do
+not require the user to name MCP tools when their request is clear.
+
+- If the user provides one tender file and one accepted technical bid file,
+  treat it as an accepted case pair. Call `writing_ingest_case_pair`, then
+  summarize the learned writing patterns and where they were stored.
+- If the user provides only a tender file and asks to write, draft, produce, or
+  prepare a pass/fail technical bid, call `writing_extract_tender_requirements`,
+  `writing_build_response_matrix`, `writing_search_case_patterns`,
+  `writing_generate_outline`, then generate section text and call
+  `writing_generate_docx`.
+- If the user asks whether a draft covers the tender requirements, call
+  `writing_check_draft_compliance`.
+- If the user asks for a PDF or final export, call `writing_export_pdf` after a
+  DOCX exists.
+- If the user asks what has been learned or wants similar wording, call
+  `writing_search_case_patterns`.
+- Ask a short clarification only when the role of a file is ambiguous, for
+  example two DOCX files with no hint which is tender and which is accepted bid.
+
 ## Required Flow
 
 1. Learn accepted case pairs before drafting when examples are available.

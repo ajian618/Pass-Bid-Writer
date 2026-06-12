@@ -78,7 +78,26 @@ cd C:\Users\ajian\Documents\通过制标书撰写
 pass-bid-writer chat
 ```
 
-然后直接把文件路径发给它，并明确要求入库：
+然后直接把文件路径发给它即可。现在 `pass-bid-writer` 的 SOUL 和
+`AGENTS.md` 已经写了意图路由规则：看到“招标文件 + 已通过技术标”时，
+它应该自己判断这是案例学习任务，并调用 `writing_ingest_case_pair`。
+
+推荐自然语言：
+
+```text
+请学习这一套通过制案例：
+
+招标文件：C:\资料\某河道治理项目\招标文件.pdf
+已通过技术标：C:\资料\某河道治理项目\已通过技术标.docx
+
+项目类型：河道治理
+地区：浙江
+标签：水利,通过制,河道治理
+
+请沉淀章节结构、硬性响应项、常用施工组织写法、水利专项场景和人工复核风险点。
+```
+
+调试时也可以把工具名说得更死：
 
 ```text
 请使用 pass-bid-writing MCP 的 writing_ingest_case_pair 工具学习这一套通过制案例：
@@ -99,27 +118,33 @@ pass-bid-writer chat
 C:\Users\ajian\Documents\通过制标书撰写\storage\pass_bid_writing.db
 ```
 
-注意：不是把文件路径一贴就一定自动入库。你要在提示词里明确说“调用
-`writing_ingest_case_pair` 入库/学习这套案例”。这样最稳。
+如果它没有自动调用工具，说明文件角色或路径不够清楚。此时再补一句：
+
+```text
+这是成对通过案例，请调用 writing_ingest_case_pair 入库。
+```
 
 ## 4. 怎么用新招标文件生成通过制技术标初稿
 
-推荐提示：
+推荐自然语言：
+
+```text
+请根据这个新招标文件生成一份通过制技术标 Word 初稿：
+C:\资料\新项目\招标文件.pdf
+
+请先抽取招标要求和响应矩阵，再参考历史通过案例写法，最后生成 DOCX 并做一次漏项检查。
+不要虚构项目参数，缺少信息的地方标成人工确认项。
+```
+
+在调试或它没有自动走工具时，再使用更明确的版本：
 
 ```text
 请使用 pass-bid-writing MCP 处理这个新招标文件：
 C:\资料\新项目\招标文件.pdf
 
-工作步骤：
-1. 调用 writing_extract_tender_requirements 抽取通过制技术标要求。
-2. 调用 writing_build_response_matrix 生成响应矩阵。
-3. 调用 writing_search_case_patterns 检索历史通过案例写法。
-4. 调用 writing_generate_outline 生成目录。
-5. 你先输出完整章节正文草稿。
-6. 调用 writing_generate_docx 生成 Word 初稿。
-7. 调用 writing_check_draft_compliance 做反向检查。
-
-目标：生成一份可人工复核的通过制技术标 DOCX 初稿，不要虚构项目参数。
+依次调用 writing_extract_tender_requirements、writing_build_response_matrix、
+writing_search_case_patterns、writing_generate_outline、writing_generate_docx、
+writing_check_draft_compliance。
 ```
 
 生成的 Word 默认在：
