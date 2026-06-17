@@ -226,7 +226,8 @@ storage\drafts\
 
 Hermes 主模型可以继续用 DeepSeek。多模态模型只作为 `pass-bid-writing`
 MCP 里的视觉副脑，用来读取 PDF/Word 渲染后的页面截图，并返回结构化版式
-JSON。
+JSON。当前实现不是调用 DashScope SDK，而是直接调用百炼 OpenAI 兼容
+Chat Completions HTTP 接口。
 
 默认推荐阿里云百炼：
 
@@ -238,6 +239,27 @@ cd C:\Users\<公司电脑用户名>\Documents\通过制标书撰写
 脚本会提示输入百炼 API Key，并写入仓库根目录的 `.env`。这个文件默认不进
 Git；`pass-bid-writing` MCP 启动时会自动加载它，所以电脑重启后也不用重新
 输入。
+
+百炼中国内地/北京地域默认会写入：
+
+```text
+PASS_BID_VISION_PROVIDER="aliyun_qwen"
+PASS_BID_VISION_MODEL="qwen3.7-plus"
+PASS_BID_VISION_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+DASHSCOPE_API_KEY="..."
+```
+
+代码实际发请求时会把 base URL 拼成：
+
+```text
+https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+```
+
+如果你的百炼账号使用新加坡或美国地域，可以用 `-BaseUrl` 显式覆盖。例如：
+
+```powershell
+.\scripts\configure-vision.ps1 -Provider aliyun_qwen -Model qwen3.7-plus -BaseUrl "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+```
 
 也可以切到 Kimi：
 
@@ -259,6 +281,15 @@ Git；`pass-bid-writing` MCP 启动时会自动加载它，所以电脑重启后
 
 如果没有配置 API key，工具不会崩溃；它会完成本地渲染并返回
 `not_configured`，提醒人工复核最终 PDF 观感。
+
+配置完成后建议跑一次无公司资料的连通性测试：
+
+```powershell
+.\scripts\test-vision-config.ps1
+```
+
+这个脚本会生成一个临时测试 PDF，渲染成图片，然后调用当前 `.env` 里的模型。
+看到 `status` 为 `ready` 就说明 base URL、API Key 和模型名称都能正常调用。
 
 ## 7. 这个 MCP 有哪些工具
 
@@ -308,6 +339,7 @@ git pull --ff-only origin main
 py -3.12 -m pip install -r requirements.txt
 .\scripts\register-hermes-mcp.ps1
 .\scripts\configure-vision.ps1 -Provider aliyun_qwen -Model qwen3.7-plus
+.\scripts\test-vision-config.ps1
 hermes mcp test pass-bid-writing
 ```
 

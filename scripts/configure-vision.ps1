@@ -25,6 +25,16 @@ if (-not $Model) {
   }
 }
 
+if (-not $BaseUrl) {
+  if ($Provider -eq "kimi") {
+    $BaseUrl = "https://api.moonshot.cn/v1"
+  } elseif ($Provider -eq "doubao") {
+    $BaseUrl = "https://ark.cn-beijing.volces.com/api/v3"
+  } else {
+    $BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  }
+}
+
 if (-not $Disable -and -not $ApiKey) {
   $secure = Read-Host "Enter API key for $Provider" -AsSecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
@@ -41,10 +51,7 @@ $updates = [ordered]@{
   PASS_BID_VISION_ENABLED = $(if ($Disable) { "disabled" } else { "auto" })
   PASS_BID_VISION_PROVIDER = $Provider
   PASS_BID_VISION_MODEL = $Model
-}
-
-if ($BaseUrl) {
-  $updates["PASS_BID_VISION_BASE_URL"] = $BaseUrl
+  PASS_BID_VISION_BASE_URL = $BaseUrl
 }
 
 if (-not $Disable) {
@@ -84,6 +91,7 @@ foreach ($key in $existing.Keys) {
 Write-Host "Vision configuration written: $envPath"
 Write-Host "Provider: $Provider"
 Write-Host "Model: $Model"
+Write-Host "Base URL: $BaseUrl"
 if ($Disable) {
   Write-Host "Vision analysis disabled."
 } else {

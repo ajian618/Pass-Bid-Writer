@@ -145,12 +145,14 @@ def _analyze_images(
 ) -> dict[str, Any]:
     provider = settings.vision_provider
     model = settings.vision_model
+    endpoint = _endpoint_for_provider(provider)
     base = {
         "source_path": str(source_path),
         "source_kind": source_kind,
         "analysis_type": analysis_type,
         "provider": provider,
         "model": model,
+        "endpoint": endpoint,
         "render": render,
     }
     if render.get("status") != "ready":
@@ -181,6 +183,7 @@ def _analyze_images(
             provider=provider,
             model=model,
             api_key=api_key,
+            endpoint=endpoint,
             render=render,
             analysis_type=analysis_type,
             reference_layout=reference_layout,
@@ -206,11 +209,11 @@ def _call_openai_compatible_vision(
     provider: str,
     model: str,
     api_key: str,
+    endpoint: str,
     render: dict[str, Any],
     analysis_type: str,
     reference_layout: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    endpoint = _endpoint_for_provider(provider)
     prompt = _prompt_for_analysis(analysis_type, reference_layout)
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for page in render.get("pages", [])[:6]:
@@ -226,16 +229,21 @@ def _call_openai_compatible_vision(
     body = {
         "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": "你是技术标 Word/PDF 版式分析助手，只输出可解析的 JSON。",
-            },
             {"role": "user", "content": content},
         ],
         "temperature": 0.1,
         "max_tokens": 1800,
         "response_format": {"type": "json_object"},
     }
+    return _post_openai_compatible(endpoint=endpoint, api_key=api_key, body=body)
+
+
+def _post_openai_compatible(
+    *,
+    endpoint: str,
+    api_key: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -251,6 +259,14 @@ def _call_openai_compatible_vision(
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="ignore")
+        if (
+            exc.code in {400, 422}
+            and "response_format" in body
+            and "response_format" in body_text
+        ):
+            retry_body = dict(body)
+            retry_body.pop("response_format", None)
+            return _post_openai_compatible(endpoint=endpoint, api_key=api_key, body=retry_body)
         raise RuntimeError(f"Vision API HTTP {exc.code}: {body_text}") from exc
 
 
@@ -284,6 +300,7 @@ def _prompt_for_analysis(
     if analysis_type == "visual_check":
         reference_text = json.dumps(reference_layout or {}, ensure_ascii=False)[:3000]
         return (
+            "你是技术标 Word/PDF 版式分析助手，只输出可解析的 JSON。"
             "请检查这些技术标导出 PDF 页面截图的正式观感。"
             "输出 JSON，字段包括 status, cover, toc, headers_footers, page_numbers, "
             "heading_hierarchy, tables, visual_findings, human_confirm_items。"
@@ -291,6 +308,7 @@ def _prompt_for_analysis(
             f"可参考的版式 profile: {reference_text}"
         )
     return (
+        "你是技术标 Word/PDF 版式分析助手，只输出可解析的 JSON。"
         "请分析这些已通过技术标或招标文件页面截图的版式习惯。"
         "输出 JSON，字段包括 document_type, cover, toc, page_setup, fonts, "
         "heading_hierarchy, numbering, headers_footers, page_numbers, tables, "
