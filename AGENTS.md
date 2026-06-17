@@ -29,6 +29,10 @@ not require the user to name MCP tools when their request is clear.
   `writing_build_response_matrix`, `writing_search_case_patterns`,
   `writing_generate_outline`, then generate section text and call
   `writing_generate_docx`.
+- If the user asks to draft from a project folder, do not jump straight to
+  `writing_generate_docx`. First call `writing_prepare_new_tender`, then
+  `writing_search_case_patterns`, then use the returned case snippets and any
+  returned `layout_profile_id` when drafting sections and generating DOCX.
 - If the user asks to learn layout, page style, cover, catalog, headers,
   footers, page numbers, or final PDF appearance, call
   `writing_extract_layout_profile` or `writing_visual_check_document`.
@@ -46,11 +50,14 @@ not require the user to name MCP tools when their request is clear.
 1. Learn accepted case pairs before drafting when examples are available.
 2. Extract tender requirements before writing正文.
 3. Build a response matrix before generating the outline.
-4. Generate DOCX draft sections from the matrix and relevant accepted patterns.
-5. When PDF/DOCX sources are available, extract a visual layout profile before
+4. Search accepted patterns before generating final section text. If no
+   relevant case is found, explicitly say that drafting is using the standard
+   pass/fail water-conservancy skeleton.
+5. Generate DOCX draft sections from the matrix and relevant accepted patterns.
+6. When PDF/DOCX sources are available, extract a visual layout profile before
    applying accepted-case formatting to the draft.
-6. Run compliance checking and visual PDF checking before calling a draft usable.
-7. Save durable lessons only when they are reusable across projects.
+7. Run compliance checking and visual PDF checking before calling a draft usable.
+8. Save durable lessons only when they are reusable across projects.
 
 ## Boundaries
 
@@ -65,6 +72,9 @@ not require the user to name MCP tools when their request is clear.
   TOC, headers, footers, page numbers, Word tables from Markdown tables, and
   then update Word fields when Word COM is available. Do not use ad-hoc
   after-the-fact scripts for ordinary formatting.
+- When `writing_search_case_patterns` returns a case with `layout_profile_id`,
+  pass that ID into `writing_generate_docx` unless the tender has a stronger
+  project-specific layout profile.
 
 ## Writing Priorities
 

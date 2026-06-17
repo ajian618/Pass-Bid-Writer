@@ -16,25 +16,105 @@ from docx.shared import Inches, Pt, RGBColor
 from .text import extract_docx_text
 
 
+COLOR_KEYWORDS = {
+    "深蓝": "1F4E79",
+    "蓝绿": "008C95",
+    "蓝": "1F4E79",
+    "绿色": "00A65A",
+    "绿": "00A65A",
+    "青": "0099A8",
+    "灰": "D9E2F3",
+    "红": "C00000",
+    "黑": "000000",
+}
+
+FONT_KEYWORDS = {
+    "仿宋": ("FangSong", "仿宋"),
+    "宋体": ("SimSun", "宋体"),
+    "黑体": ("SimHei", "黑体"),
+    "楷体": ("KaiTi", "楷体"),
+    "微软雅黑": ("Microsoft YaHei", "微软雅黑"),
+    "serif": ("Times New Roman", "Times New Roman"),
+    "times": ("Times New Roman", "Times New Roman"),
+}
+
+
 def safe_filename(value: str, fallback: str = "draft") -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\r\n\t]+', "_", value).strip(" ._")
     return cleaned or fallback
 
 
-def apply_chinese_font(document: Document) -> None:
+def build_style_config(layout_profile: dict[str, Any] | None, *, title: str) -> dict[str, Any]:
+    profile = layout_profile or {}
+    body_font = _infer_font(
+        _profile_values(profile, "body", "正文", "normal", "fonts", "style_rules"),
+        default=("FangSong", "仿宋"),
+    )
+    heading_font = _infer_font(
+        _profile_values(profile, "heading", "标题", "heading_hierarchy", "fonts", "style_rules"),
+        default=("SimHei", "黑体"),
+    )
+    cover_font = _infer_font(
+        _profile_values(profile, "cover", "封面", "fonts", "style_rules"),
+        default=heading_font,
+    )
+    table_font = _infer_font(
+        _profile_values(profile, "table", "表格", "tables", "fonts", "style_rules"),
+        default=("SimSun", "宋体"),
+    )
+    heading_color = _infer_color(
+        _profile_values(profile, "heading_color", "heading_hierarchy", "标题"),
+        default="1F4E79",
+    )
+    cover_color = _infer_color(
+        _profile_values(profile, "cover_color", "cover", "封面", "style_rules"),
+        default=heading_color,
+    )
+    cover_accent_fill = _infer_color(
+        _profile_values(profile, "accent", "wave", "波浪", "cover", "封面", "style_rules"),
+        default="EAF4F8",
+    )
+    table_header_fill = _infer_color(
+        _profile_values(profile, "header_fill", "table_header", "表头", "tables", "style_rules"),
+        default="D9EAF7",
+    )
+    table_header_text_color = _infer_color(
+        _profile_values(profile, "table_header_text", "表头文字", "tables", "style_rules"),
+        default="000000",
+    )
+    return {
+        "title": title,
+        "body_font": body_font,
+        "heading_font": heading_font,
+        "cover_font": cover_font,
+        "table_font": table_font,
+        "heading_color": heading_color,
+        "cover_color": cover_color,
+        "cover_accent_fill": cover_accent_fill,
+        "table_header_fill": table_header_fill,
+        "table_header_text_color": table_header_text_color,
+        "header_text": _layout_text(profile, "headers_footers", "header") or _find_text(profile, ["页眉", "header"]) or title,
+        "cover_subtitle": _layout_text(profile, "cover", "subtitle") or _find_text(profile, ["subtitle", "副标题"]) or "通过制技术标",
+        "cover_bottom_text": _layout_text(profile, "cover", "bottom_text") or _find_text(profile, ["bottom_text", "底部"]) or "投标文件技术部分",
+    }
+
+
+def apply_chinese_font(document: Document, style_config: dict[str, Any]) -> None:
     styles = document.styles
+    body_font, body_east_asia = style_config["body_font"]
+    heading_font, heading_east_asia = style_config["heading_font"]
     normal = styles["Normal"]
-    normal.font.name = "FangSong"
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "仿宋")
+    normal.font.name = body_font
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), body_east_asia)
     normal.font.size = Pt(12)
     normal.paragraph_format.first_line_indent = Pt(24)
     normal.paragraph_format.line_spacing = 1.5
     for style_name in ("Heading 1", "Heading 2", "Heading 3"):
         style = styles[style_name]
-        style.font.name = "SimHei"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+        style.font.name = heading_font
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), heading_east_asia)
         style.font.bold = True
-        style.font.color.rgb = RGBColor(31, 78, 121)
+        style.font.color.rgb = _rgb(style_config["heading_color"])
         style.paragraph_format.first_line_indent = Pt(0)
     styles["Heading 1"].font.size = Pt(16)
     styles["Heading 2"].font.size = Pt(15)
@@ -43,9 +123,8 @@ def apply_chinese_font(document: Document) -> None:
 
 def apply_layout_profile(
     document: Document,
-    layout_profile: dict[str, Any] | None,
     *,
-    title: str,
+    style_config: dict[str, Any],
 ) -> None:
     section = document.sections[0]
     section.top_margin = Inches(1.0)
@@ -55,7 +134,7 @@ def apply_layout_profile(
     section.header_distance = Inches(0.5)
     section.footer_distance = Inches(0.45)
 
-    header_text = _layout_text(layout_profile or {}, "headers_footers", "header") or title
+    header_text = style_config["header_text"]
     paragraph = section.header.paragraphs[0]
     paragraph.text = header_text
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -69,32 +148,44 @@ def apply_layout_profile(
     _set_paragraph_font(footer, "SimSun", 9)
 
 
-def add_cover_page(document: Document, title: str, layout_profile: dict[str, Any] | None) -> None:
-    for _ in range(6):
+def add_cover_page(document: Document, title: str, style_config: dict[str, Any]) -> None:
+    add_cover_accent_band(document, style_config)
+    for _ in range(5):
         document.add_paragraph("")
     title_para = document.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title_para.paragraph_format.first_line_indent = Pt(0)
     title_run = title_para.add_run(title)
     title_run.bold = True
-    _set_run_font(title_run, "SimHei", "黑体", 22)
+    cover_font, cover_east_asia = style_config["cover_font"]
+    _set_run_font(title_run, cover_font, cover_east_asia, 22, color=style_config["cover_color"])
 
-    subtitle = _layout_text(layout_profile or {}, "cover", "subtitle") or "通过制技术标"
+    subtitle = style_config["cover_subtitle"]
     subtitle_para = document.add_paragraph()
     subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle_para.paragraph_format.first_line_indent = Pt(0)
     subtitle_run = subtitle_para.add_run(subtitle)
-    _set_run_font(subtitle_run, "SimHei", "黑体", 16)
+    _set_run_font(subtitle_run, cover_font, cover_east_asia, 16, color=style_config["cover_color"])
 
     for _ in range(8):
         document.add_paragraph("")
     note_para = document.add_paragraph()
     note_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     note_para.paragraph_format.first_line_indent = Pt(0)
-    note = _layout_text(layout_profile or {}, "cover", "bottom_text") or "投标文件技术部分"
+    note = style_config["cover_bottom_text"]
     note_run = note_para.add_run(note)
     _set_run_font(note_run, "SimSun", "宋体", 12)
     document.add_page_break()
+
+
+def add_cover_accent_band(document: Document, style_config: dict[str, Any]) -> None:
+    paragraph = document.add_paragraph(" ")
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    p_pr = paragraph._p.get_or_add_pPr()
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), style_config["cover_accent_fill"])
+    p_pr.append(shading)
 
 
 def add_toc_page(document: Document) -> None:
@@ -120,12 +211,81 @@ def _layout_text(profile: dict[str, Any], section: str, key: str) -> str:
     return ""
 
 
+def _profile_values(profile: Any, *hints: str) -> list[str]:
+    hints_lower = [hint.lower() for hint in hints]
+    values: list[str] = []
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if any(hint in key_text.lower() or hint in child_path.lower() for hint in hints_lower):
+                    values.append(_stringify(child))
+                walk(child, child_path)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, path)
+        elif isinstance(value, str):
+            if any(hint in value.lower() or hint in path.lower() for hint in hints_lower):
+                values.append(value)
+
+    walk(profile)
+    return [value for value in values if value.strip()]
+
+
+def _find_text(profile: Any, hints: list[str]) -> str:
+    values = _profile_values(profile, *hints)
+    for value in values:
+        stripped = re.sub(r"\s+", " ", value).strip()
+        if 1 <= len(stripped) <= 80 and not stripped.startswith("{"):
+            return stripped
+    return ""
+
+
+def _stringify(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _infer_font(values: list[str], *, default: tuple[str, str]) -> tuple[str, str]:
+    text = " ".join(values).lower()
+    for keyword, font in FONT_KEYWORDS.items():
+        if keyword.lower() in text:
+            return font
+    return default
+
+
+def _infer_color(values: list[str], *, default: str) -> str:
+    text = " ".join(values)
+    explicit = re.search(r"#?([0-9A-Fa-f]{6})", text)
+    if explicit:
+        return explicit.group(1).upper()
+    rgb = re.search(r"rgb\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})\)", text, re.I)
+    if rgb:
+        return "".join(f"{max(0, min(255, int(part))):02X}" for part in rgb.groups())
+    for keyword, color in COLOR_KEYWORDS.items():
+        if keyword in text:
+            return color
+    return default
+
+
+def _rgb(color: str) -> RGBColor:
+    clean = re.sub(r"[^0-9A-Fa-f]", "", color or "")
+    if len(clean) != 6:
+        clean = "000000"
+    return RGBColor(int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16))
+
+
 def _set_paragraph_font(paragraph, font_name: str, size: int) -> None:
     for run in paragraph.runs:
         _set_run_font(run, font_name, font_name, size)
 
 
-def _set_run_font(run, font_name: str, east_asia: str, size: int) -> None:
+def _set_run_font(run, font_name: str, east_asia: str, size: int | float, color: str | None = None) -> None:
     run.font.name = font_name
     r_pr = run._element.get_or_add_rPr()
     r_fonts = r_pr.rFonts
@@ -134,6 +294,8 @@ def _set_run_font(run, font_name: str, east_asia: str, size: int) -> None:
         r_pr.append(r_fonts)
     r_fonts.set(qn("w:eastAsia"), east_asia)
     run.font.size = Pt(size)
+    if color:
+        run.font.color.rgb = _rgb(color)
 
 
 def _add_page_number(paragraph) -> None:
@@ -161,7 +323,16 @@ def _shade_cell(cell, fill: str) -> None:
     tc_pr.append(shading)
 
 
-def _set_cell_text(cell, text: str, *, bold: bool = False) -> None:
+def _set_cell_text(
+    cell,
+    text: str,
+    *,
+    bold: bool = False,
+    style_config: dict[str, Any] | None = None,
+) -> None:
+    style_config = style_config or {}
+    table_font, table_east_asia = style_config.get("table_font", ("SimSun", "宋体"))
+    text_color = style_config.get("table_header_text_color", "000000") if bold else None
     cell.text = text
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     for paragraph in cell.paragraphs:
@@ -169,7 +340,7 @@ def _set_cell_text(cell, text: str, *, bold: bool = False) -> None:
         paragraph.paragraph_format.first_line_indent = Pt(0)
         for run in paragraph.runs:
             run.bold = bold
-            _set_run_font(run, "SimSun", "宋体", 10.5)
+            _set_run_font(run, table_font, table_east_asia, 10.5, color=text_color)
 
 
 def normalize_sections(
@@ -230,7 +401,7 @@ def add_markdown_content(
     document: Document,
     content: str,
     *,
-    layout_profile: dict[str, Any] | None = None,
+    style_config: dict[str, Any],
 ) -> dict[str, int]:
     lines = content.splitlines()
     idx = 0
@@ -242,7 +413,7 @@ def add_markdown_content(
             continue
         if _is_markdown_table_start(lines, idx):
             rows, idx = _consume_markdown_table(lines, idx)
-            add_word_table(document, rows, layout_profile=layout_profile)
+            add_word_table(document, rows, style_config=style_config)
             stats["tables"] += 1
             continue
         heading = _parse_markdown_or_chinese_heading(line)
@@ -317,7 +488,7 @@ def add_word_table(
     document: Document,
     rows: list[list[str]],
     *,
-    layout_profile: dict[str, Any] | None = None,
+    style_config: dict[str, Any],
 ) -> None:
     if not rows:
         return
@@ -325,13 +496,13 @@ def add_word_table(
     table = document.add_table(rows=0, cols=column_count)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
-    header_fill = _layout_text(layout_profile or {}, "tables", "header_fill") or "D9EAF7"
+    header_fill = style_config["table_header_fill"]
     for row_idx, row in enumerate(rows):
         cells = table.add_row().cells
         for col_idx in range(column_count):
             cell = cells[col_idx]
             text = row[col_idx] if col_idx < len(row) else ""
-            _set_cell_text(cell, text, bold=row_idx == 0)
+            _set_cell_text(cell, text, bold=row_idx == 0, style_config=style_config)
             if row_idx == 0:
                 _shade_cell(cell, header_fill)
 
@@ -348,9 +519,10 @@ def generate_docx(
 ) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
-    apply_chinese_font(document)
-    apply_layout_profile(document, layout_profile, title=title)
-    add_cover_page(document, title, layout_profile)
+    style_config = build_style_config(layout_profile, title=title)
+    apply_chinese_font(document, style_config)
+    apply_layout_profile(document, style_config=style_config)
+    add_cover_page(document, title, style_config)
     add_toc_page(document)
     document.add_paragraph("说明：本文件为 Hermes 生成的通过制技术标复核初稿，提交前需人工核查项目参数、格式和签章要求。")
 
@@ -368,7 +540,7 @@ def generate_docx(
         document.add_heading(str(section["title"]), level=level)
         content = str(section.get("content", "")).strip()
         if content:
-            add_markdown_content(document, content, layout_profile=layout_profile)
+            add_markdown_content(document, content, style_config=style_config)
 
     if response_matrix:
         document.add_heading("响应矩阵复核表", level=1)
@@ -377,15 +549,15 @@ def generate_docx(
         table.style = "Table Grid"
         headers = ["编号", "类别", "招标要求", "对应章节", "人工核查"]
         for idx, header in enumerate(headers):
-            _set_cell_text(table.rows[0].cells[idx], header, bold=True)
-            _shade_cell(table.rows[0].cells[idx], "D9EAF7")
+            _set_cell_text(table.rows[0].cells[idx], header, bold=True, style_config=style_config)
+            _shade_cell(table.rows[0].cells[idx], style_config["table_header_fill"])
         for row in response_matrix:
             cells = table.add_row().cells
-            _set_cell_text(cells[0], str(row.get("requirement_id", "")))
-            _set_cell_text(cells[1], str(row.get("category", "")))
-            _set_cell_text(cells[2], str(row.get("requirement", "")))
-            _set_cell_text(cells[3], str(row.get("target_section", "")))
-            _set_cell_text(cells[4], "是" if row.get("human_check") else "否")
+            _set_cell_text(cells[0], str(row.get("requirement_id", "")), style_config=style_config)
+            _set_cell_text(cells[1], str(row.get("category", "")), style_config=style_config)
+            _set_cell_text(cells[2], str(row.get("requirement", "")), style_config=style_config)
+            _set_cell_text(cells[3], str(row.get("target_section", "")), style_config=style_config)
+            _set_cell_text(cells[4], "是" if row.get("human_check") else "否", style_config=style_config)
 
     document.save(str(output_path))
     field_update = update_docx_fields(output_path)
@@ -394,6 +566,7 @@ def generate_docx(
         "section_count": len(document.paragraphs),
         "table_count": len(document.tables),
         "field_update": field_update,
+        "style_config": style_config,
     }
 
 

@@ -175,6 +175,58 @@ class PassBidWritingMcpTests(unittest.TestCase):
         self.assertIn("已通过样式技术标", text)
         self.assertIn("测试投标单位", text)
         self.assertIn("样式化页眉", doc.sections[0].header.paragraphs[0].text)
+        self.assertEqual(result["style_config"]["cover_color"], "1F4E79")
+
+    def test_visual_profile_style_values_drive_table_and_cover_formatting(self) -> None:
+        from pass_bid_writing import db, mcp_server
+        from pass_bid_writing.config import ensure_storage_dirs, get_settings
+
+        settings = get_settings()
+        ensure_storage_dirs(settings)
+        db.init_db(settings.database_path)
+        with db.db_session(settings.database_path) as conn:
+            layout_profile_id = db.create_layout_profile(
+                conn,
+                source_path="styled-layout.pdf",
+                source_kind="accepted_bid",
+                provider="test",
+                model="test-model",
+                status="ready",
+                profile={
+                    "cover": {
+                        "subtitle": "蓝绿波浪封面",
+                        "bottom_text": "台州水利投标文件",
+                        "style": "标题为深蓝色，封面有蓝绿色波浪装饰",
+                    },
+                    "fonts": {"body": "正文仿宋", "heading": "标题黑体蓝色"},
+                    "tables": {"style": "蓝底表头，表格正文宋体"},
+                    "style_rules": ["表头底色为#00A65A", "标题使用深蓝色"],
+                },
+                render={},
+            )
+
+        result = mcp_server.writing_generate_docx(
+            title="视觉样式应用测试",
+            sections=[
+                {
+                    "title": "第一章 表格测试",
+                    "content": "\n".join(
+                        [
+                            "| 名称 | 要求 |",
+                            "| --- | --- |",
+                            "| 工期 | 满足招标文件 |",
+                        ]
+                    ),
+                }
+            ],
+            output_name="visual-style-draft",
+            visual_qa=False,
+            layout_profile_id=layout_profile_id,
+        )
+        self.assertEqual(result["style_config"]["table_header_fill"], "00A65A")
+        self.assertEqual(result["style_config"]["heading_color"], "1F4E79")
+        self.assertEqual(result["style_config"]["body_font"][1], "仿宋")
+        self.assertIn("蓝绿波浪封面", "\n".join(p.text for p in Document(result["docx_path"]).paragraphs))
 
     def test_project_folder_aliases_and_new_tender_prepare(self) -> None:
         from pass_bid_writing import mcp_server
@@ -224,6 +276,7 @@ class PassBidWritingMcpTests(unittest.TestCase):
         )
         self.assertGreaterEqual(prepared["requirements"]["requirement_count"], 1)
         self.assertGreaterEqual(len(prepared["response_matrix"]), 1)
+        self.assertGreaterEqual(len(prepared["similar_cases"]), 1)
         self.assertTrue(prepared["outputs_dir"].endswith("outputs"))
 
     def test_layout_profile_without_api_key_renders_and_degrades(self) -> None:

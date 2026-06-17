@@ -259,8 +259,44 @@ def writing_prepare_new_tender(
             source_path=Path(str(tender_file["path"])),
             source_kind="new_tender",
         )
+    query_terms = _candidate_case_queries(project, tender_file, requirements, response_matrix)
     with db.db_session(settings.database_path) as conn:
         project_id = _store_project(conn, project)
+        similar_cases = []
+        seen_case_ids: set[int] = set()
+        for query in query_terms:
+            for case in db.search_case_pairs(conn, query=query, limit=5):
+                case_id = int(case.get("id", 0))
+                if case_id and case_id not in seen_case_ids:
+                    seen_case_ids.add(case_id)
+                    similar_cases.append(case)
+                if len(similar_cases) >= 5:
+                    break
+            if len(similar_cases) >= 5:
+                break
+    similar_case_summaries = []
+    for case in similar_cases:
+        patterns = case.get("patterns", {})
+        similar_case_summaries.append(
+            {
+                "case_id": case.get("id"),
+                "title": case.get("title"),
+                "project_type": case.get("project_type"),
+                "tags": case.get("tags"),
+                "layout_profile_id": patterns.get("layout_profile_id") or case.get("layout_profile_id"),
+                "scene_terms": patterns.get("scene_terms", [])[:12],
+                "outline": patterns.get("outline", [])[:8],
+                "reusable_snippets": patterns.get("reusable_snippets", [])[:5],
+            }
+        )
+    recommended_layout_profile_id = next(
+        (
+            item.get("layout_profile_id")
+            for item in similar_case_summaries
+            if item.get("layout_profile_id")
+        ),
+        None,
+    )
     return {
         "project_id": project_id,
         "project": project,
@@ -268,8 +304,42 @@ def writing_prepare_new_tender(
         "requirements": requirements,
         "response_matrix": response_matrix,
         "layout_profile": layout_result,
+        "similar_cases": similar_case_summaries,
+        "recommended_layout_profile_id": recommended_layout_profile_id,
         "outputs_dir": str(project_path / "outputs"),
     }
+
+
+def _candidate_case_queries(
+    project: dict[str, Any],
+    tender_file: dict[str, Any],
+    requirements: dict[str, Any],
+    response_matrix: list[dict[str, Any]],
+) -> list[str]:
+    candidates: list[str] = []
+    for value in (project.get("name"), Path(str(tender_file.get("path", ""))).stem):
+        text = str(value or "").strip()
+        if text:
+            candidates.append(text)
+    text_blob = " ".join(
+        [
+            str(project.get("name", "")),
+            " ".join(str(item.get("requirement", "")) for item in requirements.get("requirements", [])[:10]),
+            " ".join(str(row.get("category", "")) for row in response_matrix[:10]),
+        ]
+    )
+    for keyword in ("河道", "堤防", "水库", "泵站", "闸站", "水闸", "围堰", "导流", "度汛", "排水", "降水", "水利"):
+        if keyword in text_blob:
+            candidates.append(keyword)
+    for row in response_matrix[:8]:
+        category = str(row.get("category", "")).strip()
+        if category and category not in {"general", "format", "pass_fail"}:
+            candidates.append(category)
+    deduped: list[str] = []
+    for item in candidates:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped[:12]
 
 
 @mcp.tool()
