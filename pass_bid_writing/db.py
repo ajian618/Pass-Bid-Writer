@@ -31,6 +31,21 @@ def connect(database_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    ddl: str,
+) -> None:
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 @contextmanager
 def db_session(database_path: Path) -> Iterator[sqlite3.Connection]:
     conn = connect(database_path)
@@ -79,6 +94,8 @@ def init_db(database_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 tender_path TEXT NOT NULL DEFAULT '',
+                project_dir TEXT NOT NULL DEFAULT '',
+                layout_profile_id INTEGER,
                 requirements_json TEXT NOT NULL DEFAULT '{}',
                 response_matrix_json TEXT NOT NULL DEFAULT '[]',
                 outline_json TEXT NOT NULL DEFAULT '[]',
@@ -86,15 +103,75 @@ def init_db(database_path: Path) -> None:
                 docx_path TEXT NOT NULL DEFAULT '',
                 pdf_path TEXT NOT NULL DEFAULT '',
                 compliance_json TEXT NOT NULL DEFAULT '{}',
+                visual_report_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                project_kind TEXT NOT NULL,
+                project_dir TEXT NOT NULL,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_kind, project_dir)
+            );
+
+            CREATE TABLE IF NOT EXISTS project_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                suffix TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'attachment',
+                confidence REAL NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, file_path),
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS layout_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_path TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                profile_json TEXT NOT NULL DEFAULT '{}',
+                render_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS visual_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_path TEXT NOT NULL,
+                analysis_type TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                analysis_json TEXT NOT NULL DEFAULT '{}',
+                render_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_case_pairs_title ON case_pairs(title);
             CREATE INDEX IF NOT EXISTS idx_case_pairs_type ON case_pairs(project_type);
             CREATE INDEX IF NOT EXISTS idx_lessons_scope ON writing_lessons(scope);
+            CREATE INDEX IF NOT EXISTS idx_projects_kind ON projects(project_kind);
+            CREATE INDEX IF NOT EXISTS idx_project_files_role ON project_files(role);
+            CREATE INDEX IF NOT EXISTS idx_layout_profiles_source ON layout_profiles(source_path);
+            CREATE INDEX IF NOT EXISTS idx_visual_analyses_target ON visual_analyses(target_path);
             """
         )
+        _add_column_if_missing(conn, "case_pairs", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "case_pairs", "layout_profile_id", "layout_profile_id INTEGER")
+        _add_column_if_missing(conn, "drafts", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "drafts", "layout_profile_id", "layout_profile_id INTEGER")
+        _add_column_if_missing(conn, "drafts", "visual_report_json", "visual_report_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -108,6 +185,12 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         ("response_matrix_json", []),
         ("section_contents_json", {}),
         ("compliance_json", {}),
+        ("summary_json", {}),
+        ("metadata_json", {}),
+        ("profile_json", {}),
+        ("render_json", {}),
+        ("analysis_json", {}),
+        ("visual_report_json", {}),
     ):
         if key in data:
             data[key.removesuffix("_json")] = _json_load(data.pop(key), default)
@@ -128,6 +211,8 @@ def create_case_pair(
     outline: list[dict[str, Any]],
     requirements: dict[str, Any],
     patterns: dict[str, Any],
+    project_dir: str = "",
+    layout_profile_id: int | None = None,
 ) -> int:
     now = utc_now()
     cur = conn.execute(
@@ -135,9 +220,9 @@ def create_case_pair(
         INSERT INTO case_pairs (
             title, project_type, region, tags, tender_path, bid_path,
             tender_text, bid_text, outline_json, requirements_json,
-            patterns_json, created_at, updated_at
+            patterns_json, project_dir, layout_profile_id, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -151,6 +236,8 @@ def create_case_pair(
             _json_dump(outline),
             _json_dump(requirements),
             _json_dump(patterns),
+            project_dir,
+            layout_profile_id,
             now,
             now,
         ),
@@ -243,24 +330,31 @@ def create_draft(
     outline: list[dict[str, Any]],
     section_contents: dict[str, str],
     docx_path: str,
+    project_dir: str = "",
+    layout_profile_id: int | None = None,
+    visual_report: dict[str, Any] | None = None,
 ) -> int:
     now = utc_now()
     cur = conn.execute(
         """
         INSERT INTO drafts (
-            title, tender_path, requirements_json, response_matrix_json,
-            outline_json, section_contents_json, docx_path, created_at, updated_at
+            title, tender_path, project_dir, layout_profile_id, requirements_json,
+            response_matrix_json, outline_json, section_contents_json, docx_path,
+            visual_report_json, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
             tender_path,
+            project_dir,
+            layout_profile_id,
             _json_dump(requirements),
             _json_dump(response_matrix),
             _json_dump(outline),
             _json_dump(section_contents),
             docx_path,
+            _json_dump(visual_report or {}),
             now,
             now,
         ),
@@ -286,6 +380,180 @@ def update_draft_compliance(
     )
 
 
+def update_draft_visual_report(
+    conn: sqlite3.Connection,
+    draft_id: int,
+    visual_report: dict[str, Any],
+) -> None:
+    conn.execute(
+        "UPDATE drafts SET visual_report_json = ?, updated_at = ? WHERE id = ?",
+        (_json_dump(visual_report), utc_now(), draft_id),
+    )
+
+
 def get_draft_by_docx(conn: sqlite3.Connection, docx_path: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM drafts WHERE docx_path = ?", (docx_path,)).fetchone()
     return row_to_dict(row)
+
+
+def create_or_update_project(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    project_kind: str,
+    project_dir: str,
+    summary: dict[str, Any],
+) -> int:
+    now = utc_now()
+    existing = conn.execute(
+        "SELECT id FROM projects WHERE project_kind = ? AND project_dir = ?",
+        (project_kind, project_dir),
+    ).fetchone()
+    if existing:
+        project_id = int(existing["id"])
+        conn.execute(
+            """
+            UPDATE projects
+            SET name = ?, summary_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (name, _json_dump(summary), now, project_id),
+        )
+        return project_id
+    cur = conn.execute(
+        """
+        INSERT INTO projects (name, project_kind, project_dir, summary_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (name, project_kind, project_dir, _json_dump(summary), now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def upsert_project_file(
+    conn: sqlite3.Connection,
+    *,
+    project_id: int,
+    file_path: str,
+    file_name: str,
+    suffix: str,
+    role: str,
+    confidence: float,
+    metadata: dict[str, Any],
+) -> int:
+    now = utc_now()
+    existing = conn.execute(
+        "SELECT id FROM project_files WHERE project_id = ? AND file_path = ?",
+        (project_id, file_path),
+    ).fetchone()
+    if existing:
+        file_id = int(existing["id"])
+        conn.execute(
+            """
+            UPDATE project_files
+            SET file_name = ?, suffix = ?, role = ?, confidence = ?, metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (file_name, suffix, role, confidence, _json_dump(metadata), now, file_id),
+        )
+        return file_id
+    cur = conn.execute(
+        """
+        INSERT INTO project_files (
+            project_id, file_path, file_name, suffix, role, confidence,
+            metadata_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            file_path,
+            file_name,
+            suffix,
+            role,
+            confidence,
+            _json_dump(metadata),
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def create_layout_profile(
+    conn: sqlite3.Connection,
+    *,
+    source_path: str,
+    source_kind: str,
+    provider: str,
+    model: str,
+    status: str,
+    profile: dict[str, Any],
+    render: dict[str, Any],
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO layout_profiles (
+            source_path, source_kind, provider, model, status,
+            profile_json, render_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source_path,
+            source_kind,
+            provider,
+            model,
+            status,
+            _json_dump(profile),
+            _json_dump(render),
+            utc_now(),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def get_layout_profile(conn: sqlite3.Connection, layout_profile_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM layout_profiles WHERE id = ?", (layout_profile_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def latest_layout_profile_for_source(conn: sqlite3.Connection, source_path: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM layout_profiles WHERE source_path = ? ORDER BY id DESC LIMIT 1",
+        (source_path,),
+    ).fetchone()
+    return row_to_dict(row)
+
+
+def create_visual_analysis(
+    conn: sqlite3.Connection,
+    *,
+    target_path: str,
+    analysis_type: str,
+    provider: str,
+    model: str,
+    status: str,
+    analysis: dict[str, Any],
+    render: dict[str, Any],
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO visual_analyses (
+            target_path, analysis_type, provider, model, status,
+            analysis_json, render_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target_path,
+            analysis_type,
+            provider,
+            model,
+            status,
+            _json_dump(analysis),
+            _json_dump(render),
+            utc_now(),
+        ),
+    )
+    return int(cur.lastrowid)

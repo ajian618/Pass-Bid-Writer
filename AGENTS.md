@@ -17,11 +17,21 @@ not require the user to name MCP tools when their request is clear.
 - If the user provides one tender file and one accepted technical bid file,
   treat it as an accepted case pair. Call `writing_ingest_case_pair`, then
   summarize the learned writing patterns and where they were stored.
+- If the user points to `projects/passed_cases/<project>` or `projects/passed/<project>`,
+  treat it as an accepted project folder. Call `writing_ingest_passed_case`
+  with visual analysis enabled.
+- If the user points to `projects/new_tenders/<project>` or `projects/unpassed/<project>`,
+  treat it as a new tender folder. Call `writing_prepare_new_tender`, then
+  continue the drafting flow and write outputs to that project's `outputs`
+  folder.
 - If the user provides only a tender file and asks to write, draft, produce, or
   prepare a pass/fail technical bid, call `writing_extract_tender_requirements`,
   `writing_build_response_matrix`, `writing_search_case_patterns`,
   `writing_generate_outline`, then generate section text and call
   `writing_generate_docx`.
+- If the user asks to learn layout, page style, cover, catalog, headers,
+  footers, page numbers, or final PDF appearance, call
+  `writing_extract_layout_profile` or `writing_visual_check_document`.
 - If the user asks whether a draft covers the tender requirements, call
   `writing_check_draft_compliance`.
 - If the user asks for a PDF or final export, call `writing_export_pdf` after a
@@ -37,8 +47,10 @@ not require the user to name MCP tools when their request is clear.
 2. Extract tender requirements before writing正文.
 3. Build a response matrix before generating the outline.
 4. Generate DOCX draft sections from the matrix and relevant accepted patterns.
-5. Run compliance checking before calling a draft usable.
-6. Save durable lessons only when they are reusable across projects.
+5. When PDF/DOCX sources are available, extract a visual layout profile before
+   applying accepted-case formatting to the draft.
+6. Run compliance checking and visual PDF checking before calling a draft usable.
+7. Save durable lessons only when they are reusable across projects.
 
 ## Boundaries
 
@@ -47,6 +59,8 @@ not require the user to name MCP tools when their request is clear.
   construction constraints when the tender file does not provide them.
 - Keep writing experience separate from review/scoring experience.
 - Prefer Word/DOCX as the working artifact; PDF is the final export artifact.
+- Keep DeepSeek/Hermes as the writing brain. Use the configured vision provider
+  only through `pass-bid-writing` tools for screenshot/layout analysis.
 
 ## Writing Priorities
 
@@ -57,3 +71,7 @@ not require the user to name MCP tools when their request is clear.
   reservoir constraints, quality, safety, environment, and schedule.
 - Mark uncertain or missing project-specific information as human-confirmation
   items instead of fabricating it.
+- Default local data layout is `projects/passed_cases/<project>` for accepted
+  cases and `projects/new_tenders/<project>` for tenders to draft. The aliases
+  `projects/passed` and `projects/unpassed` are accepted, but the clearer names
+  should be preferred in new documentation.

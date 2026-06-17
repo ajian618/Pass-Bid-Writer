@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 from .text import extract_docx_text
 
@@ -24,10 +26,105 @@ def apply_chinese_font(document: Document) -> None:
     normal.font.name = "SimSun"
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
     normal.font.size = Pt(12)
+    normal.paragraph_format.first_line_indent = Pt(24)
+    normal.paragraph_format.line_spacing = 1.5
     for style_name in ("Heading 1", "Heading 2", "Heading 3"):
         style = styles[style_name]
         style.font.name = "SimHei"
         style._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+        style.paragraph_format.first_line_indent = Pt(0)
+    styles["Heading 1"].font.size = Pt(16)
+    styles["Heading 2"].font.size = Pt(15)
+    styles["Heading 3"].font.size = Pt(14)
+
+
+def apply_layout_profile(document: Document, layout_profile: dict[str, Any] | None) -> None:
+    section = document.sections[0]
+    section.top_margin = Inches(1.0)
+    section.bottom_margin = Inches(1.0)
+    section.left_margin = Inches(1.15)
+    section.right_margin = Inches(1.0)
+    section.header_distance = Inches(0.5)
+    section.footer_distance = Inches(0.45)
+    if not layout_profile:
+        return
+
+    header_text = _layout_text(layout_profile, "headers_footers", "header")
+    if header_text:
+        paragraph = section.header.paragraphs[0]
+        paragraph.text = header_text
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _set_paragraph_font(paragraph, "SimSun", 9)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer.add_run("第 ")
+    _add_page_number(footer)
+    footer.add_run(" 页")
+    _set_paragraph_font(footer, "SimSun", 9)
+
+
+def add_cover_page(document: Document, title: str, layout_profile: dict[str, Any] | None) -> None:
+    for _ in range(7):
+        document.add_paragraph("")
+    title_para = document.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_para.paragraph_format.first_line_indent = Pt(0)
+    title_run = title_para.add_run(title)
+    title_run.bold = True
+    title_run.font.name = "SimHei"
+    title_run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    title_run.font.size = Pt(22)
+
+    subtitle = _layout_text(layout_profile or {}, "cover", "subtitle") or "通过制技术标"
+    subtitle_para = document.add_paragraph()
+    subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle_para.paragraph_format.first_line_indent = Pt(0)
+    subtitle_run = subtitle_para.add_run(subtitle)
+    subtitle_run.font.name = "SimHei"
+    subtitle_run._element.rPr.rFonts.set(qn("w:eastAsia"), "黑体")
+    subtitle_run.font.size = Pt(16)
+
+    for _ in range(8):
+        document.add_paragraph("")
+    note_para = document.add_paragraph()
+    note_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    note_para.paragraph_format.first_line_indent = Pt(0)
+    note = _layout_text(layout_profile or {}, "cover", "bottom_text") or "投标文件技术部分"
+    note_para.add_run(note)
+    note_para.runs[0].font.size = Pt(12)
+    note_para.runs[0]._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    document.add_page_break()
+
+
+def _layout_text(profile: dict[str, Any], section: str, key: str) -> str:
+    value = profile.get(section, {})
+    if isinstance(value, dict):
+        candidate = value.get(key) or value.get("text") or value.get("pattern")
+        if isinstance(candidate, str):
+            return candidate.strip()
+    return ""
+
+
+def _set_paragraph_font(paragraph, font_name: str, size: int) -> None:
+    for run in paragraph.runs:
+        run.font.name = font_name
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+        run.font.size = Pt(size)
+
+
+def _add_page_number(paragraph) -> None:
+    run = paragraph.add_run()
+    fld_char_1 = OxmlElement("w:fldChar")
+    fld_char_1.set(qn("w:fldCharType"), "begin")
+    instr_text = OxmlElement("w:instrText")
+    instr_text.set(qn("xml:space"), "preserve")
+    instr_text.text = "PAGE"
+    fld_char_2 = OxmlElement("w:fldChar")
+    fld_char_2.set(qn("w:fldCharType"), "end")
+    run._r.append(fld_char_1)
+    run._r.append(instr_text)
+    run._r.append(fld_char_2)
 
 
 def normalize_sections(
@@ -92,11 +189,16 @@ def generate_docx(
     sections: dict[str, str] | list[dict[str, Any]] | None = None,
     requirements: dict[str, Any] | None = None,
     response_matrix: list[dict[str, Any]] | None = None,
+    layout_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
     apply_chinese_font(document)
-    document.add_heading(title, level=0)
+    apply_layout_profile(document, layout_profile)
+    if layout_profile:
+        add_cover_page(document, title, layout_profile)
+    else:
+        document.add_heading(title, level=0)
     document.add_paragraph("说明：本文件为 Hermes 生成的通过制技术标复核初稿，提交前需人工核查项目参数、格式和签章要求。")
 
     if requirements:
@@ -120,6 +222,7 @@ def generate_docx(
     if response_matrix:
         document.add_heading("响应矩阵复核表", level=1)
         table = document.add_table(rows=1, cols=5)
+        table.style = "Table Grid"
         headers = ["编号", "类别", "招标要求", "对应章节", "人工核查"]
         for idx, header in enumerate(headers):
             table.rows[0].cells[idx].text = header

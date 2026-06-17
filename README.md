@@ -35,7 +35,7 @@ hermes mcp test pass-bid-writing
 ```text
 Profile: pass-bid-writer
 pass-bid-writing ✓ enabled
-Tools discovered: 8
+Tools discovered: 13
 ```
 
 ## 2. 怎么启动这个制标 profile
@@ -62,13 +62,42 @@ hermes -p pass-bid-writer chat
 
 日常建议用 `pass-bid-writer chat`，因为它最明确。
 
-## 3. 怎么喂一套通过制案例
+## 3. 推荐资料目录
 
-准备一套成对资料：
+新版推荐直接把资料按项目放到本仓库下：
 
 ```text
-招标文件：C:\资料\某河道治理项目\招标文件.pdf
-已通过技术标：C:\资料\某河道治理项目\已通过技术标.docx
+projects\passed_cases\<已通过项目名>\
+projects\new_tenders\<待撰写项目名>\
+```
+
+`passed_cases` 放已经通过的项目资料，`new_tenders` 放要 Hermes 写的新项目资料。
+每个项目文件夹里可以直接堆 PDF/DOCX/TXT/MD，不强制再分子目录。工具会根据文件名和内容角色推断“招标文件”“已通过技术标”“附件”。
+
+兼容旧口语目录：
+
+```text
+projects\passed\<已通过项目名>\
+projects\unpassed\<待撰写项目名>\
+```
+
+但新资料建议用 `passed_cases` 和 `new_tenders`，比 `unpassed` 更不容易被理解成“未通过废标”。
+
+扫描资料库：
+
+```text
+请扫描 projects 资料库，列出已通过案例和待撰写项目。
+```
+
+它会调用 `writing_scan_projects`。
+
+## 4. 怎么喂一套通过制案例
+
+推荐把一套资料放成：
+
+```text
+projects\passed_cases\某河道治理项目\招标文件.pdf
+projects\passed_cases\某河道治理项目\已通过技术标.pdf
 ```
 
 进入 Hermes：
@@ -78,8 +107,17 @@ cd C:\Users\ajian\Documents\通过制标书撰写
 pass-bid-writer chat
 ```
 
-然后直接把文件路径发给它即可。现在 `pass-bid-writer` 的 SOUL 和
-`AGENTS.md` 已经写了意图路由规则：看到“招标文件 + 已通过技术标”时，
+然后直接发项目文件夹：
+
+```text
+请学习这个已通过项目：
+C:\Users\ajian\Documents\通过制标书撰写\projects\passed_cases\某河道治理项目
+```
+
+它会调用 `writing_ingest_passed_case`，抽正文、章节结构、响应习惯，并默认把 PDF/DOCX 渲染成页面截图做视觉版式分析。
+
+如果你仍然只有两个散落文件，也可以继续使用旧方式。现在 `pass-bid-writer`
+的 SOUL 和 `AGENTS.md` 已经写了意图路由规则：看到“招标文件 + 已通过技术标”时，
 它应该自己判断这是案例学习任务，并调用 `writing_ingest_case_pair`。
 
 推荐自然语言：
@@ -124,7 +162,30 @@ C:\Users\ajian\Documents\通过制标书撰写\storage\pass_bid_writing.db
 这是成对通过案例，请调用 writing_ingest_case_pair 入库。
 ```
 
-## 4. 怎么用新招标文件生成通过制技术标初稿
+## 5. 怎么用新招标文件生成通过制技术标初稿
+
+推荐把新项目资料放成：
+
+```text
+projects\new_tenders\某新项目\招标文件.pdf
+projects\new_tenders\某新项目\补充说明.pdf
+```
+
+然后对 Hermes 说：
+
+```text
+请根据这个待撰写项目生成一份通过制技术标 Word 初稿：
+C:\Users\ajian\Documents\通过制标书撰写\projects\new_tenders\某新项目
+
+请先抽取招标要求和响应矩阵，再参考历史通过案例写法和版式，最后生成 DOCX、导出 PDF 视觉检查，并做一次漏项检查。
+不要虚构项目参数，缺少信息的地方标成人工确认项。
+```
+
+生成结果默认在：
+
+```text
+projects\new_tenders\某新项目\outputs\
+```
 
 推荐自然语言：
 
@@ -147,7 +208,7 @@ writing_search_case_patterns、writing_generate_outline、writing_generate_docx�
 writing_check_draft_compliance。
 ```
 
-生成的 Word 默认在：
+如果只给单个招标文件，不使用项目资料夹，生成的 Word 默认在：
 
 ```text
 storage\drafts\
@@ -161,35 +222,113 @@ storage\drafts\
 
 本机已验证可以通过 Microsoft Word COM 导出 PDF。
 
-## 5. 这个 MCP 有哪些工具
+## 6. 视觉模型怎么配置
+
+Hermes 主模型可以继续用 DeepSeek。多模态模型只作为 `pass-bid-writing`
+MCP 里的视觉副脑，用来读取 PDF/Word 渲染后的页面截图，并返回结构化版式
+JSON。
+
+默认推荐阿里云百炼：
+
+```powershell
+cd C:\Users\<公司电脑用户名>\Documents\通过制标书撰写
+.\scripts\configure-vision.ps1 -Provider aliyun_qwen -Model qwen3.7-plus
+```
+
+脚本会提示输入百炼 API Key，并写入仓库根目录的 `.env`。这个文件默认不进
+Git；`pass-bid-writing` MCP 启动时会自动加载它，所以电脑重启后也不用重新
+输入。
+
+也可以切到 Kimi：
+
+```powershell
+.\scripts\configure-vision.ps1 -Provider kimi -Model kimi-k2.6
+```
+
+或豆包：
+
+```powershell
+.\scripts\configure-vision.ps1 -Provider doubao -Model 你的火山方舟视觉模型ID
+```
+
+如果要临时关闭视觉模型：
+
+```powershell
+.\scripts\configure-vision.ps1 -Disable
+```
+
+如果没有配置 API key，工具不会崩溃；它会完成本地渲染并返回
+`not_configured`，提醒人工复核最终 PDF 观感。
+
+## 7. 这个 MCP 有哪些工具
 
 ```text
 writing_ingest_case_pair
+writing_scan_projects
+writing_ingest_passed_case
+writing_prepare_new_tender
+writing_extract_layout_profile
 writing_extract_tender_requirements
 writing_build_response_matrix
 writing_search_case_patterns
 writing_generate_outline
 writing_generate_docx
 writing_check_draft_compliance
+writing_visual_check_document
 writing_export_pdf
 ```
 
 工具分工：
 
 - `writing_ingest_case_pair`：导入“招标文件 + 已通过技术标”成对案例。
+- `writing_scan_projects`：扫描 `projects\passed_cases` / `projects\new_tenders` 资料库。
+- `writing_ingest_passed_case`：导入一个已通过项目文件夹，并默认做视觉版式分析。
+- `writing_prepare_new_tender`：准备一个待撰写项目文件夹，抽要求、矩阵和版式要求。
+- `writing_extract_layout_profile`：从 PDF/DOCX 页面截图中抽取版式 profile。
 - `writing_extract_tender_requirements`：抽取新招标文件中的技术标要求。
 - `writing_build_response_matrix`：建立“招标要求 -> 标书章节”的响应矩阵。
 - `writing_search_case_patterns`：检索已通过案例里的结构、片段和写法。
 - `writing_generate_outline`：生成通过制技术标目录。
-- `writing_generate_docx`：生成可编辑 Word 初稿。
+- `writing_generate_docx`：生成可编辑 Word 初稿，可应用版式 profile 并自动做视觉检查。
 - `writing_check_draft_compliance`：反向检查漏项、占位符和人工确认项。
+- `writing_visual_check_document`：渲染 DOCX/PDF 并检查最终 PDF 观感。
 - `writing_export_pdf`：把 DOCX 导出为 PDF。
 
-## 6. 公司电脑部署步骤
+## 8. 公司电脑部署和升级步骤
 
-### 6.1 准备环境
+### 8.1 从上一版升级
 
-公司电脑需要：
+公司电脑如果已经正常运行上一版，并且 `pass-bid-writer` 飞书机器人已经接好，
+不要重新执行 `pass-bid-writer gateway setup`。只更新仓库、依赖、MCP 注册和
+SOUL 即可：
+
+```powershell
+cd C:\Users\<公司电脑用户名>\Documents\通过制标书撰写
+git pull --ff-only origin main
+py -3.12 -m pip install -r requirements.txt
+.\scripts\register-hermes-mcp.ps1
+.\scripts\configure-vision.ps1 -Provider aliyun_qwen -Model qwen3.7-plus
+hermes mcp test pass-bid-writing
+```
+
+看到 `Tools discovered: 13` 就说明新版 MCP 已加载。
+
+如果公司电脑的飞书网关正在后台运行，升级后重启网关，让它加载新版代码和
+SOUL：
+
+```powershell
+pass-bid-writer gateway status
+pass-bid-writer gateway stop
+pass-bid-writer gateway start
+pass-bid-writer gateway status
+```
+
+注意：这一步只是重启已配置好的网关，不会重新配置飞书应用。开发机没有配置
+飞书机器人时，不需要运行这些 gateway 命令。
+
+### 8.2 准备环境
+
+新电脑首次部署需要：
 
 - Python 3.12
 - Git
@@ -208,7 +347,7 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
-### 6.2 拉取或复制项目
+### 8.3 拉取或复制项目
 
 如果已经有 Git 仓库：
 
@@ -224,14 +363,14 @@ cd 通过制标书撰写
 C:\Users\<公司电脑用户名>\Documents\通过制标书撰写
 ```
 
-### 6.3 安装依赖
+### 8.4 安装依赖
 
 ```powershell
 cd C:\Users\<公司电脑用户名>\Documents\通过制标书撰写
 py -3.12 -m pip install -r requirements.txt
 ```
 
-### 6.4 注册 Hermes profile 和 MCP
+### 8.5 注册 Hermes profile 和 MCP
 
 ```powershell
 .\scripts\register-hermes-mcp.ps1
@@ -246,7 +385,7 @@ py -3.12 -m pip install -r requirements.txt
 - 从 `pass-bid-writer` profile 中移除 `bid-review` MCP，保持制标和评审隔离。
 - 切换当前 Hermes profile 到 `pass-bid-writer`。
 
-### 6.5 验证
+### 8.6 验证
 
 ```powershell
 hermes profile show pass-bid-writer
@@ -255,9 +394,9 @@ hermes mcp test pass-bid-writing
 py -3.12 -m unittest discover -s tests -v
 ```
 
-看到 `Tools discovered: 8` 就说明 MCP 正常。
+看到 `Tools discovered: 13` 就说明 MCP 正常。
 
-### 6.6 启动
+### 8.7 启动
 
 ```powershell
 pass-bid-writer chat
@@ -269,7 +408,7 @@ pass-bid-writer chat
 hermes -p pass-bid-writer chat
 ```
 
-## 7. 数据怎么迁移
+## 9. 数据怎么迁移
 
 制标案例和草稿默认在：
 
@@ -285,7 +424,7 @@ storage\drafts\
 
 如果公司后续多人共用，可以再升级成共享数据库或同步目录；第一版先保持本地简单可靠。
 
-## 8. 飞书机器人能不能单独配给这个 profile
+## 10. 飞书机器人能不能单独配给这个 profile
 
 可以，而且建议单独配。
 
@@ -322,7 +461,7 @@ pass-bid-writer gateway status
 
 注意：不要让多个 profile 同时使用同一个飞书应用凭据。更稳的做法是给制标助手单独建一个飞书机器人应用。
 
-## 9. 常用检查命令
+## 11. 常用检查命令
 
 ```powershell
 Get-Command pass-bid-writer
@@ -334,9 +473,9 @@ hermes profile show pass-bid-writer
 hermes mcp test pass-bid-writing
 ```
 
-## 10. 当前限制
+## 12. 当前限制
 
-- PDF/DOCX 解析以文本抽取为主，扫描件或复杂表格可能需要 OCR/人工整理。
+- PDF/DOCX 现在支持页面渲染和视觉模型版式分析；扫描件 OCR 质量仍取决于多模态模型和源文件清晰度。
 - 合规检查是启发式反向检查，不等于法律或专家保证。
 - 通过制标书仍需要人工核查格式、签章、项目参数、人员设备和最终 PDF。
 - 现在是本地数据库；多人协作和统一知识库是后续阶段。

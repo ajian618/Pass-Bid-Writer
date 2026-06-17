@@ -15,6 +15,7 @@ venv/
 env/
 
 storage/
+projects/
 reports/
 outputs/
 exports/
