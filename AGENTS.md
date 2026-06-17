@@ -61,6 +61,10 @@ not require the user to name MCP tools when their request is clear.
 - Prefer Word/DOCX as the working artifact; PDF is the final export artifact.
 - Keep DeepSeek/Hermes as the writing brain. Use the configured vision provider
   only through `pass-bid-writing` tools for screenshot/layout analysis.
+- `writing_generate_docx` is the document assembler. It should render cover,
+  TOC, headers, footers, page numbers, Word tables from Markdown tables, and
+  then update Word fields when Word COM is available. Do not use ad-hoc
+  after-the-fact scripts for ordinary formatting.
 
 ## Writing Priorities
 

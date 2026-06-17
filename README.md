@@ -320,7 +320,7 @@ writing_export_pdf
 - `writing_build_response_matrix`：建立“招标要求 -> 标书章节”的响应矩阵。
 - `writing_search_case_patterns`：检索已通过案例里的结构、片段和写法。
 - `writing_generate_outline`：生成通过制技术标目录。
-- `writing_generate_docx`：生成可编辑 Word 初稿，可应用版式 profile 并自动做视觉检查。
+- `writing_generate_docx`：生成可编辑 Word 初稿，默认含封面、目录、页眉页脚、页码；可把 Markdown 表格渲染成真正的 Word 表格，可应用版式 profile 并自动做视觉检查。
 - `writing_check_draft_compliance`：反向检查漏项、占位符和人工确认项。
 - `writing_visual_check_document`：渲染 DOCX/PDF 并检查最终 PDF 观感。
 - `writing_export_pdf`：把 DOCX 导出为 PDF。

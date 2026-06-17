@@ -94,13 +94,26 @@ def _store_layout_profile(
     return result
 
 
-def _load_layout_profile(settings, layout_profile_id: int | None) -> dict[str, Any] | None:
-    if layout_profile_id is None:
+def _normalize_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned or cleaned.lower() in {"none", "null", "0"}:
+            return None
+        return int(cleaned)
+    number = int(value)
+    return number or None
+
+
+def _load_layout_profile(settings, layout_profile_id: Any) -> dict[str, Any] | None:
+    normalized_id = _normalize_optional_int(layout_profile_id)
+    if normalized_id is None:
         return None
     with db.db_session(settings.database_path) as conn:
-        record = db.get_layout_profile(conn, int(layout_profile_id))
+        record = db.get_layout_profile(conn, normalized_id)
     if not record:
-        raise ValueError(f"layout_profile not found: {layout_profile_id}")
+        raise ValueError(f"layout_profile not found: {normalized_id}")
     return record.get("profile", {})
 
 
@@ -262,7 +275,7 @@ def writing_prepare_new_tender(
 @mcp.tool()
 def writing_visual_check_document(
     docx_path: str,
-    layout_profile_id: int | None = None,
+    layout_profile_id: int | str | None = None,
 ) -> dict[str, Any]:
     """Render a generated DOCX/PDF and run vision-based final PDF appearance checks."""
     settings = _settings()
@@ -449,7 +462,7 @@ def writing_generate_docx(
     output_name: str = "",
     tender_path: str = "",
     project_dir: str = "",
-    layout_profile_id: int | None = None,
+    layout_profile_id: int | str | None = None,
     visual_qa: bool = True,
 ) -> dict[str, Any]:
     """
@@ -459,7 +472,8 @@ def writing_generate_docx(
     the tool creates a structured placeholder draft from outline and matrix.
     """
     settings = _settings()
-    layout_profile = _load_layout_profile(settings, layout_profile_id)
+    normalized_layout_profile_id = _normalize_optional_int(layout_profile_id)
+    layout_profile = _load_layout_profile(settings, normalized_layout_profile_id)
     filename = safe_filename(output_name or title, fallback="pass_bid_draft") + ".docx"
     if project_dir.strip():
         project_path = _resolve_path(project_dir, base=settings.root_dir)
@@ -517,7 +531,7 @@ def writing_generate_docx(
             section_contents=normalized_sections,
             docx_path=result["docx_path"],
             project_dir=str(project_path) if project_path else "",
-            layout_profile_id=layout_profile_id,
+            layout_profile_id=normalized_layout_profile_id,
             visual_report=visual_report,
         )
     result["draft_id"] = draft_id

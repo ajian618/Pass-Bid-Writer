@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from docx import Document
+
 
 class PassBidWritingMcpTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -90,12 +92,89 @@ class PassBidWritingMcpTests(unittest.TestCase):
             visual_qa=False,
         )
         self.assertTrue(Path(docx["docx_path"]).exists())
+        self.assertGreaterEqual(docx["table_count"], 1)
 
         compliance = mcp_server.writing_check_draft_compliance(
             draft_docx=docx["docx_path"],
             requirements=requirements,
         )
         self.assertIn("status", compliance)
+
+    def test_generate_docx_renders_cover_toc_header_footer_and_markdown_table(self) -> None:
+        from pass_bid_writing import mcp_server
+
+        result = mcp_server.writing_generate_docx(
+            title="新建泵站工程通过制技术标",
+            sections=[
+                {
+                    "level": 1,
+                    "title": "第一章 编制说明",
+                    "content": "\n".join(
+                        [
+                            "本章说明编制依据和响应原则。",
+                            "| 序号 | 响应内容 | 状态 |",
+                            "| --- | --- | --- |",
+                            "| 1 | 工期要求 | 已响应 |",
+                            "| 2 | 质量要求 | 已响应 |",
+                            "## 1.1 编制依据",
+                            "严格响应招标文件要求。",
+                        ]
+                    ),
+                }
+            ],
+            output_name="markdown-table-draft",
+            visual_qa=False,
+            layout_profile_id="",
+        )
+
+        doc = Document(result["docx_path"])
+        text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        self.assertIn("新建泵站工程通过制技术标", text)
+        self.assertIn("目录", text)
+        self.assertGreaterEqual(len(doc.tables), 1)
+        table_text = [[cell.text for cell in row.cells] for row in doc.tables[0].rows]
+        self.assertEqual(table_text[0], ["序号", "响应内容", "状态"])
+        self.assertEqual(table_text[1], ["1", "工期要求", "已响应"])
+
+        header_text = doc.sections[0].header.paragraphs[0].text
+        footer_text = doc.sections[0].footer.paragraphs[0].text
+        self.assertIn("新建泵站工程通过制技术标", header_text)
+        self.assertIn("第 ", footer_text)
+
+    def test_generate_docx_applies_saved_layout_profile(self) -> None:
+        from pass_bid_writing import db, mcp_server
+        from pass_bid_writing.config import ensure_storage_dirs, get_settings
+
+        settings = get_settings()
+        ensure_storage_dirs(settings)
+        db.init_db(settings.database_path)
+        with db.db_session(settings.database_path) as conn:
+            layout_profile_id = db.create_layout_profile(
+                conn,
+                source_path="layout-source.pdf",
+                source_kind="accepted_bid",
+                provider="test",
+                model="test-model",
+                status="ready",
+                profile={
+                    "cover": {"subtitle": "已通过样式技术标", "bottom_text": "测试投标单位"},
+                    "headers_footers": {"header": "样式化页眉"},
+                },
+                render={},
+            )
+
+        result = mcp_server.writing_generate_docx(
+            title="样式应用测试",
+            sections={"第一章 测试": "正文内容。"},
+            output_name="layout-profile-draft",
+            visual_qa=False,
+            layout_profile_id=str(layout_profile_id),
+        )
+        doc = Document(result["docx_path"])
+        text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        self.assertIn("已通过样式技术标", text)
+        self.assertIn("测试投标单位", text)
+        self.assertIn("样式化页眉", doc.sections[0].header.paragraphs[0].text)
 
     def test_project_folder_aliases_and_new_tender_prepare(self) -> None:
         from pass_bid_writing import mcp_server

@@ -35,7 +35,7 @@
 4. 调用 `writing_search_case_patterns` 检索相似项目、章节结构和可复用表达。
 5. 调用 `writing_generate_outline` 生成目录骨架。
 6. 如果有 PDF/DOCX 样本或新项目 PDF，调用视觉工具抽取版式 profile。
-7. 由你负责生成各章节正文，再调用 `writing_generate_docx` 组装 Word 初稿；项目资料夹任务要传入 `project_dir`。
+7. 由你负责生成各章节正文，再调用 `writing_generate_docx` 组装 Word 初稿；项目资料夹任务要传入 `project_dir`。正文里可以使用 Markdown 表格，工具会渲染为真正的 Word 表格。
 8. 调用 `writing_check_draft_compliance` 做反向检查，并调用 `writing_visual_check_document` 检查最终 PDF 观感。
 9. 人工确认后再调用 `writing_export_pdf` 导出 PDF。
 
@@ -47,3 +47,4 @@
 - 对招标文件硬性格式要求保持敏感，包括暗标/明标、签章、页码、目录、字体、装订。
 - DeepSeek 仍是你的写作主脑；多模态模型只通过 `pass-bid-writing` 的视觉工具使用，负责阅读 PDF/Word 页面截图并返回结构化版式结果。
 - 默认视觉 provider 是阿里云百炼 `qwen3.7-plus`，可通过环境变量切换到 Kimi 或豆包。
+- `writing_generate_docx` 默认生成封面、目录、页眉页脚、页码，并在 Microsoft Word COM 可用时更新目录和页码域。
