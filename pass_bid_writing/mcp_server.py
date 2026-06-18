@@ -117,6 +117,40 @@ def _load_layout_profile(settings, layout_profile_id: Any) -> dict[str, Any] | N
     return record.get("profile", {})
 
 
+def _normalize_outline_payload(outline: Any) -> list[dict[str, Any]] | None:
+    if outline is None:
+        return None
+    if isinstance(outline, dict):
+        outline = outline.get("outline")
+    if outline is None:
+        return None
+    if not isinstance(outline, list):
+        raise ValueError("outline must be a list, or a writing_generate_outline result containing an outline list")
+    return outline
+
+
+def _normalize_response_matrix_payload(response_matrix: Any) -> list[dict[str, Any]] | None:
+    if response_matrix is None:
+        return None
+    if isinstance(response_matrix, dict):
+        response_matrix = response_matrix.get("matrix") or response_matrix.get("response_matrix")
+    if response_matrix is None:
+        return None
+    if not isinstance(response_matrix, list):
+        raise ValueError(
+            "response_matrix must be a list, or a writing_build_response_matrix result containing matrix"
+        )
+    return response_matrix
+
+
+def _has_section_content(sections: Any) -> bool:
+    if isinstance(sections, dict):
+        return any(str(value).strip() for value in sections.values())
+    if isinstance(sections, list):
+        return any(str(item.get("content", "")).strip() for item in sections if isinstance(item, dict))
+    return False
+
+
 @mcp.tool()
 def writing_scan_projects(root: str = "projects") -> dict[str, Any]:
     """
@@ -304,8 +338,10 @@ def writing_prepare_new_tender(
         "requirements": requirements,
         "response_matrix": response_matrix,
         "layout_profile": layout_result,
+        "new_tender_layout_profile_id": layout_result.get("layout_profile_id") if layout_result else None,
         "similar_cases": similar_case_summaries,
         "recommended_layout_profile_id": recommended_layout_profile_id,
+        "recommended_search_queries": query_terms,
         "outputs_dir": str(project_path / "outputs"),
     }
 
@@ -381,6 +417,7 @@ def writing_ingest_case_pair(
     project_type: str = "",
     region: str = "浙江",
     tags: str = "",
+    auto_visual: bool = True,
 ) -> dict[str, Any]:
     """
     Import one accepted case pair: tender file + accepted pass/fail technical bid.
@@ -395,6 +432,18 @@ def writing_ingest_case_pair(
     requirements = extract_tender_requirements(tender["text"], source_path=tender.get("path", ""))
     outline = extract_outline(bid["text"])
     patterns = extract_case_patterns(tender["text"], bid["text"])
+    layout_result: dict[str, Any] | None = None
+    layout_profile_id: int | None = None
+    bid_path = Path(str(bid.get("path") or bid_file))
+    if auto_visual and bid_path.suffix.lower() in {".pdf", ".doc", ".docx"}:
+        layout_result = _store_layout_profile(
+            settings=settings,
+            source_path=bid_path,
+            source_kind="accepted_bid",
+        )
+        layout_profile_id = int(layout_result["layout_profile_id"])
+        patterns["layout_profile_id"] = layout_profile_id
+        patterns["layout_status"] = layout_result.get("status")
 
     with db.db_session(settings.database_path) as conn:
         case_id = db.create_case_pair(
@@ -410,6 +459,7 @@ def writing_ingest_case_pair(
             outline=outline,
             requirements=requirements,
             patterns=patterns,
+            layout_profile_id=layout_profile_id,
         )
         db.create_lesson(
             conn,
@@ -424,6 +474,7 @@ def writing_ingest_case_pair(
 
     return {
         "case": saved,
+        "layout_profile": layout_result,
         "summary": {
             "tender_chars": len(tender["text"]),
             "bid_chars": len(bid["text"]),
@@ -455,7 +506,7 @@ def writing_extract_tender_requirements(
 @mcp.tool()
 def writing_build_response_matrix(
     requirements: dict[str, Any],
-    outline: list[dict[str, Any]] | None = None,
+    outline: list[dict[str, Any]] | dict[str, Any] | None = None,
     case_id: int | None = None,
 ) -> dict[str, Any]:
     """
@@ -465,13 +516,13 @@ def writing_build_response_matrix(
     section vocabulary.
     """
     settings = _settings()
-    case_outline = outline
+    case_outline = _normalize_outline_payload(outline)
     if case_id is not None:
         with db.db_session(settings.database_path) as conn:
             case = db.get_case_pair(conn, int(case_id))
             if case is None:
                 raise ValueError(f"case not found: {case_id}")
-            case_outline = case.get("outline", []) or outline
+            case_outline = case.get("outline", []) or case_outline
     rows = build_response_matrix(requirements, case_outline)
     return {
         "matrix": rows,
@@ -526,9 +577,9 @@ def writing_generate_outline(
 def writing_generate_docx(
     title: str,
     sections: dict[str, str] | list[dict[str, Any]] | None = None,
-    outline: list[dict[str, Any]] | None = None,
+    outline: list[dict[str, Any]] | dict[str, Any] | None = None,
     requirements: dict[str, Any] | None = None,
-    response_matrix: list[dict[str, Any]] | None = None,
+    response_matrix: list[dict[str, Any]] | dict[str, Any] | None = None,
     output_name: str = "",
     tender_path: str = "",
     project_dir: str = "",
@@ -544,6 +595,8 @@ def writing_generate_docx(
     settings = _settings()
     normalized_layout_profile_id = _normalize_optional_int(layout_profile_id)
     layout_profile = _load_layout_profile(settings, normalized_layout_profile_id)
+    normalized_outline = _normalize_outline_payload(outline)
+    normalized_response_matrix = _normalize_response_matrix_payload(response_matrix)
     filename = safe_filename(output_name or title, fallback="pass_bid_draft") + ".docx"
     if project_dir.strip():
         project_path = _resolve_path(project_dir, base=settings.root_dir)
@@ -556,12 +609,20 @@ def writing_generate_docx(
     result = generate_docx(
         title=title,
         output_path=output_path,
-        outline=outline,
+        outline=normalized_outline,
         sections=sections,
         requirements=requirements,
-        response_matrix=response_matrix,
+        response_matrix=normalized_response_matrix,
         layout_profile=layout_profile,
     )
+    if _has_section_content(sections):
+        result["content_status"] = "section_text_provided"
+    else:
+        result["content_status"] = "placeholder_needs_section_text"
+        result["next_required_action"] = (
+            "Generate final section text from the response matrix and accepted case snippets, "
+            "then call writing_generate_docx again with sections."
+        )
     visual_report: dict[str, Any] = {}
     if visual_qa:
         visual_report = visual_check_document(
@@ -596,8 +657,8 @@ def writing_generate_docx(
             title=title,
             tender_path=tender_path,
             requirements=requirements or {},
-            response_matrix=response_matrix or [],
-            outline=outline or [],
+            response_matrix=normalized_response_matrix or [],
+            outline=normalized_outline or [],
             section_contents=normalized_sections,
             docx_path=result["docx_path"],
             project_dir=str(project_path) if project_path else "",

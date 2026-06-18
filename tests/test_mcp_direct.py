@@ -93,12 +93,59 @@ class PassBidWritingMcpTests(unittest.TestCase):
         )
         self.assertTrue(Path(docx["docx_path"]).exists())
         self.assertGreaterEqual(docx["table_count"], 1)
+        self.assertEqual(docx["content_status"], "placeholder_needs_section_text")
 
         compliance = mcp_server.writing_check_draft_compliance(
             draft_docx=docx["docx_path"],
             requirements=requirements,
         )
         self.assertIn("status", compliance)
+
+    def test_generate_docx_accepts_wrapped_tool_outputs_and_compliance_ignores_matrix_table(self) -> None:
+        from pass_bid_writing import mcp_server
+
+        requirement_text = "必须设置龙门吊专项安全防护和沉降观测记录"
+        requirements = {
+            "detected_mode": "pass_fail",
+            "requirement_count": 1,
+            "requirements": [
+                {
+                    "id": "REQ-001",
+                    "category": "safety",
+                    "requirement": requirement_text,
+                    "source_line": 1,
+                    "suggested_section": "安全生产、文明施工及应急措施",
+                    "status": "needs_response",
+                }
+            ],
+        }
+        outline_payload = mcp_server.writing_generate_outline(requirements=requirements, title="链路兼容测试")
+        matrix_payload = mcp_server.writing_build_response_matrix(
+            requirements=requirements,
+            outline=outline_payload,
+        )
+
+        docx = mcp_server.writing_generate_docx(
+            title="链路兼容测试",
+            outline=outline_payload,
+            requirements=requirements,
+            response_matrix=matrix_payload,
+            output_name="wrapped-payload-draft",
+            visual_qa=False,
+        )
+        self.assertEqual(docx["content_status"], "placeholder_needs_section_text")
+
+        doc = Document(docx["docx_path"])
+        table_text = "\n".join(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+        self.assertIn(requirement_text, table_text)
+
+        compliance = mcp_server.writing_check_draft_compliance(
+            draft_docx=docx["docx_path"],
+            requirements=requirements,
+        )
+        self.assertEqual(compliance["checked_text_scope"], "paragraphs_only")
+        self.assertEqual(compliance["missing_count"], 1)
+        self.assertEqual(compliance["covered_count"], 0)
 
     def test_generate_docx_renders_cover_toc_header_footer_and_markdown_table(self) -> None:
         from pass_bid_writing import mcp_server
@@ -126,6 +173,7 @@ class PassBidWritingMcpTests(unittest.TestCase):
             visual_qa=False,
             layout_profile_id="",
         )
+        self.assertEqual(result["content_status"], "section_text_provided")
 
         doc = Document(result["docx_path"])
         text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
@@ -228,6 +276,69 @@ class PassBidWritingMcpTests(unittest.TestCase):
         self.assertEqual(result["style_config"]["body_font"][1], "仿宋")
         self.assertIn("蓝绿波浪封面", "\n".join(p.text for p in Document(result["docx_path"]).paragraphs))
 
+    def test_visual_profile_maps_absent_header_heading_color_and_numbering(self) -> None:
+        from pass_bid_writing import db, mcp_server
+        from pass_bid_writing.config import ensure_storage_dirs, get_settings
+
+        settings = get_settings()
+        ensure_storage_dirs(settings)
+        db.init_db(settings.database_path)
+        with db.db_session(settings.database_path) as conn:
+            layout_profile_id = db.create_layout_profile(
+                conn,
+                source_path="xiaozhi-layout.pdf",
+                source_kind="accepted_bid",
+                provider="test",
+                model="test-model",
+                status="ready",
+                profile={
+                    "cover": {"style": "封面保留蓝绿波浪装饰"},
+                    "fonts": {"body_font": "宋体", "heading_font": "黑体，加粗，黑色"},
+                    "heading_hierarchy": ["第一章/第一节/一、/1、"],
+                    "numbering": {"levels": ["第一章", "第一节", "一、", "1、"]},
+                    "headers_footers": {"header": "无"},
+                    "tables": {"header_fill": "#4472C4"},
+                    "style_rules": ["封面蓝绿波浪装饰，标题黑体、加粗、黑色"],
+                },
+                render={},
+            )
+
+        result = mcp_server.writing_generate_docx(
+            title="小芝镇样式映射测试",
+            sections=[
+                {
+                    "level": 1,
+                    "title": "1 编制说明",
+                    "content": "\n".join(
+                        [
+                            "## 1.1 编制依据",
+                            "1. 招标文件。",
+                            "2. 施工图纸。",
+                            "",
+                            "## 1.2 施工部署",
+                            "1. 围堰导流。",
+                        ]
+                    ),
+                }
+            ],
+            output_name="xiaozhi-style-draft",
+            visual_qa=False,
+            layout_profile_id=layout_profile_id,
+        )
+
+        doc = Document(result["docx_path"])
+        text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        self.assertEqual(result["style_config"]["heading_color"], "000000")
+        self.assertEqual(result["style_config"]["table_header_fill"], "4472C4")
+        self.assertEqual(result["style_config"]["header_text"], "")
+        self.assertEqual(doc.sections[0].header.paragraphs[0].text, "")
+        self.assertIn("第一章 编制说明", text)
+        self.assertIn("第一节 编制依据", text)
+        self.assertIn("第二节 施工部署", text)
+        self.assertIn("1、招标文件。", text)
+        self.assertIn("2、施工图纸。", text)
+        self.assertIn("1、围堰导流。", text)
+
     def test_project_folder_aliases_and_new_tender_prepare(self) -> None:
         from pass_bid_writing import mcp_server
 
@@ -277,6 +388,8 @@ class PassBidWritingMcpTests(unittest.TestCase):
         self.assertGreaterEqual(prepared["requirements"]["requirement_count"], 1)
         self.assertGreaterEqual(len(prepared["response_matrix"]), 1)
         self.assertGreaterEqual(len(prepared["similar_cases"]), 1)
+        self.assertGreaterEqual(len(prepared["recommended_search_queries"]), 1)
+        self.assertIsNone(prepared["new_tender_layout_profile_id"])
         self.assertTrue(prepared["outputs_dir"].endswith("outputs"))
 
     def test_layout_profile_without_api_key_renders_and_degrades(self) -> None:

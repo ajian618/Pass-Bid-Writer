@@ -13,7 +13,7 @@ from .config import Settings
 from .documents import export_docx_to_pdf
 
 
-RENDERABLE_SUFFIXES = {".pdf", ".docx"}
+RENDERABLE_SUFFIXES = {".pdf", ".doc", ".docx"}
 
 
 def extract_layout_profile(
@@ -63,7 +63,7 @@ def render_document_pages(
     suffix = source_path.suffix.lower()
     pdf_path = source_path
     conversion: dict[str, Any] = {}
-    if suffix == ".docx":
+    if suffix in {".doc", ".docx"}:
         pdf_path = render_root / f"{source_path.stem}.pdf"
         conversion = export_docx_to_pdf(source_path, pdf_path)
         if conversion.get("status") != "ready":

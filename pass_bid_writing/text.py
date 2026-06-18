@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,32 @@ def extract_docx_text(path: Path) -> str:
     return "\n".join(parts)
 
 
+def extract_legacy_doc_text(path: Path) -> str:
+    try:
+        import win32com.client  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"Reading .doc files requires Microsoft Word COM on Windows: {exc}") from exc
+
+    word = None
+    with tempfile.TemporaryDirectory() as tempdir:
+        docx_path = Path(tempdir) / f"{path.stem}.docx"
+        try:
+            word = win32com.client.DispatchEx("Word.Application")
+            word.Visible = False
+            document = word.Documents.Open(str(path.resolve()))
+            document.SaveAs(str(docx_path), FileFormat=16)
+            document.Close(False)
+            return extract_docx_text(docx_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to convert .doc file for text extraction: {exc}") from exc
+        finally:
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+
+
 def extract_pdf_text(path: Path, max_pages: int = 120) -> str:
     reader = PdfReader(str(path))
     parts: list[str] = []
@@ -57,6 +84,8 @@ def extract_text(path_or_text: str) -> dict[str, Any]:
     suffix = path.suffix.lower()
     if suffix in TEXT_SUFFIXES:
         text = read_text_file(path)
+    elif suffix == ".doc":
+        text = extract_legacy_doc_text(path)
     elif suffix == ".docx":
         text = extract_docx_text(path)
     elif suffix == ".pdf":

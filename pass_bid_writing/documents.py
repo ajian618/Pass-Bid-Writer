@@ -13,8 +13,6 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
-from .text import extract_docx_text
-
 
 COLOR_KEYWORDS = {
     "深蓝": "1F4E79",
@@ -63,7 +61,7 @@ def build_style_config(layout_profile: dict[str, Any] | None, *, title: str) -> 
         default=("SimSun", "宋体"),
     )
     heading_color = _infer_color(
-        _profile_values(profile, "heading_color", "heading_hierarchy", "标题"),
+        _heading_color_values(profile),
         default="1F4E79",
     )
     cover_color = _infer_color(
@@ -93,9 +91,10 @@ def build_style_config(layout_profile: dict[str, Any] | None, *, title: str) -> 
         "cover_accent_fill": cover_accent_fill,
         "table_header_fill": table_header_fill,
         "table_header_text_color": table_header_text_color,
-        "header_text": _layout_text(profile, "headers_footers", "header") or _find_text(profile, ["页眉", "header"]) or title,
+        "header_text": _profile_header_text(profile, title=title),
         "cover_subtitle": _layout_text(profile, "cover", "subtitle") or _find_text(profile, ["subtitle", "副标题"]) or "通过制技术标",
         "cover_bottom_text": _layout_text(profile, "cover", "bottom_text") or _find_text(profile, ["bottom_text", "底部"]) or "投标文件技术部分",
+        "numbering_scheme": _infer_numbering_scheme(profile),
     }
 
 
@@ -202,13 +201,136 @@ def add_toc_page(document: Document) -> None:
     document.add_page_break()
 
 
+def _profile_header_text(profile: dict[str, Any], *, title: str) -> str:
+    explicit = _layout_text_or_none(profile, "headers_footers", "header")
+    if explicit is None:
+        explicit = _find_text(profile, ["页眉", "header"]) or None
+    if explicit is None:
+        return title
+    return "" if _is_absent_layout_text(explicit) else explicit
+
+
 def _layout_text(profile: dict[str, Any], section: str, key: str) -> str:
+    return _layout_text_or_none(profile, section, key) or ""
+
+
+def _layout_text_or_none(profile: dict[str, Any], section: str, key: str) -> str | None:
     value = profile.get(section, {})
     if isinstance(value, dict):
         candidate = value.get(key) or value.get("text") or value.get("pattern")
         if isinstance(candidate, str):
             return candidate.strip()
-    return ""
+    return None
+
+
+def _is_absent_layout_text(value: str) -> bool:
+    normalized = re.sub(r"[\s:：。；;，,、（）()]+", "", value).lower()
+    return normalized in {
+        "",
+        "无",
+        "没有",
+        "无页眉",
+        "无页脚",
+        "不设置",
+        "未设置",
+        "none",
+        "null",
+        "no",
+        "n/a",
+        "na",
+    }
+
+
+def _heading_color_values(profile: dict[str, Any]) -> list[str]:
+    values = _profile_values_by_path(
+        profile,
+        "heading_color",
+        "title_color",
+        "标题颜色",
+        "heading_hierarchy",
+        "fonts.heading",
+        "fonts.heading_font",
+        "fonts.title",
+        "fonts.title_font",
+    )
+    values.extend(_style_rule_values(profile, "标题", "heading", "title"))
+    return values
+
+
+def _profile_values_by_path(profile: Any, *hints: str) -> list[str]:
+    hints_lower = [hint.lower() for hint in hints]
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        else:
+            text = _stringify(value).strip()
+            if text:
+                values.append(text)
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if any(hint in child_path.lower() for hint in hints_lower):
+                    collect(child)
+                walk(child, child_path)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, path)
+
+    walk(profile)
+    return values
+
+
+def _style_rule_values(profile: dict[str, Any], *text_hints: str) -> list[str]:
+    rules = profile.get("style_rules", [])
+    if isinstance(rules, str):
+        rules = [rules]
+    if not isinstance(rules, list):
+        return []
+    hints_lower = [hint.lower() for hint in text_hints]
+    values: list[str] = []
+    for rule in rules:
+        text = _stringify(rule).strip()
+        if not text:
+            continue
+        clauses = [clause.strip() for clause in re.split(r"[，,；;。]", text) if clause.strip()]
+        matches = [clause for clause in clauses if any(hint in clause.lower() for hint in hints_lower)]
+        values.extend(matches or ([text] if any(hint in text.lower() for hint in hints_lower) else []))
+    return values
+
+
+def _infer_numbering_scheme(profile: dict[str, Any]) -> dict[str, Any]:
+    values = _profile_values_by_path(
+        profile,
+        "numbering",
+        "编号",
+        "编号体系",
+        "heading_hierarchy",
+        "章节编号",
+    )
+    text = " ".join(values)
+    chinese_heading = bool(
+        re.search(r"第[一二三四五六七八九十百\d]+章|第一章|第X章|第x章", text)
+        or re.search(r"第[一二三四五六七八九十百\d]+节|第一节|第X节|第x节", text)
+        or "一、" in text
+    )
+    if not chinese_heading:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "level_1": "chapter",
+        "level_2": "section",
+        "level_3": "chinese_comma",
+        "level_4": "decimal_comma",
+    }
 
 
 def _profile_values(profile: Any, *hints: str) -> list[str]:
@@ -402,40 +524,55 @@ def add_markdown_content(
     content: str,
     *,
     style_config: dict[str, Any],
+    numbering_state: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     lines = content.splitlines()
     idx = 0
+    numbered_list_counter = 0
     stats = {"paragraphs": 0, "tables": 0, "headings": 0, "lists": 0}
     while idx < len(lines):
         line = lines[idx].strip()
         if not line:
+            numbered_list_counter = 0
             idx += 1
             continue
         if _is_markdown_table_start(lines, idx):
             rows, idx = _consume_markdown_table(lines, idx)
             add_word_table(document, rows, style_config=style_config)
+            numbered_list_counter = 0
             stats["tables"] += 1
             continue
         heading = _parse_markdown_or_chinese_heading(line)
         if heading:
             level, title = heading
-            document.add_heading(title, level=max(1, min(level, 3)))
+            add_profile_heading(
+                document,
+                title,
+                level=level,
+                style_config=style_config,
+                numbering_state=numbering_state,
+            )
+            numbered_list_counter = 0
             stats["headings"] += 1
             idx += 1
             continue
         if re.match(r"^[-*]\s+", line):
             paragraph = document.add_paragraph(re.sub(r"^[-*]\s+", "", line), style="List Bullet")
             paragraph.paragraph_format.first_line_indent = Pt(0)
+            numbered_list_counter = 0
             stats["lists"] += 1
             idx += 1
             continue
-        if re.match(r"^\d+[.)、]\s+", line):
-            paragraph = document.add_paragraph(re.sub(r"^\d+[.)、]\s+", "", line), style="List Number")
+        numbered = re.match(r"^\d+[.)、]\s+(.+)$", line)
+        if numbered:
+            numbered_list_counter += 1
+            paragraph = document.add_paragraph(f"{numbered_list_counter}、{numbered.group(1).strip()}")
             paragraph.paragraph_format.first_line_indent = Pt(0)
             stats["lists"] += 1
             idx += 1
             continue
         document.add_paragraph(line)
+        numbered_list_counter = 0
         stats["paragraphs"] += 1
         idx += 1
     return stats
@@ -452,6 +589,81 @@ def _parse_markdown_or_chinese_heading(line: str) -> tuple[int, str] | None:
     if re.match(r"^[一二三四五六七八九十]+[、.．]\s*", line):
         return 3, line
     return None
+
+
+def _new_numbering_state(style_config: dict[str, Any]) -> dict[str, Any]:
+    scheme = style_config.get("numbering_scheme", {})
+    return {
+        "enabled": bool(isinstance(scheme, dict) and scheme.get("enabled")),
+        "counters": [0, 0, 0, 0],
+    }
+
+
+def add_profile_heading(
+    document: Document,
+    title: str,
+    *,
+    level: int,
+    style_config: dict[str, Any],
+    numbering_state: dict[str, Any] | None,
+) -> None:
+    display_title = _format_profile_heading(title, level=level, numbering_state=numbering_state)
+    document.add_heading(display_title, level=max(1, min(level, 3)))
+
+
+def _format_profile_heading(
+    title: str,
+    *,
+    level: int,
+    numbering_state: dict[str, Any] | None,
+) -> str:
+    normalized_level = max(1, min(level, 4))
+    if not numbering_state or not numbering_state.get("enabled"):
+        return title
+
+    counters = numbering_state["counters"]
+    counters[normalized_level - 1] += 1
+    for idx in range(normalized_level, len(counters)):
+        counters[idx] = 0
+
+    bare_title = _strip_existing_heading_number(title)
+    if normalized_level == 1:
+        return f"第{_to_chinese_number(counters[0])}章 {bare_title}"
+    if normalized_level == 2:
+        return f"第{_to_chinese_number(counters[1])}节 {bare_title}"
+    if normalized_level == 3:
+        return f"{_to_chinese_number(counters[2])}、{bare_title}"
+    return f"{counters[3]}、{bare_title}"
+
+
+def _strip_existing_heading_number(title: str) -> str:
+    text = title.strip()
+    patterns = [
+        r"^第[一二三四五六七八九十百\d]+[章节][、\s：:.-]*",
+        r"^[一二三四五六七八九十百]+[、.．]\s*",
+        r"^\d+(?:\.\d+)*(?:[.)、．]|\s+)",
+    ]
+    for pattern in patterns:
+        stripped = re.sub(pattern, "", text, count=1).strip()
+        if stripped != text and stripped:
+            return stripped
+    return text
+
+
+def _to_chinese_number(value: int) -> str:
+    numerals = "零一二三四五六七八九"
+    if value <= 0:
+        return str(value)
+    if value < 10:
+        return numerals[value]
+    if value == 10:
+        return "十"
+    if value < 20:
+        return "十" + numerals[value % 10]
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return numerals[tens] + "十" + (numerals[ones] if ones else "")
+    return str(value)
 
 
 def _is_markdown_table_start(lines: list[str], idx: int) -> bool:
@@ -525,6 +737,7 @@ def generate_docx(
     add_cover_page(document, title, style_config)
     add_toc_page(document)
     document.add_paragraph("说明：本文件为 Hermes 生成的通过制技术标复核初稿，提交前需人工核查项目参数、格式和签章要求。")
+    numbering_state = _new_numbering_state(style_config)
 
     if requirements:
         document.add_heading("通过制响应摘要", level=1)
@@ -537,10 +750,21 @@ def generate_docx(
         response_matrix=response_matrix,
     ):
         level = max(1, min(int(section.get("level", 1)), 3))
-        document.add_heading(str(section["title"]), level=level)
+        add_profile_heading(
+            document,
+            str(section["title"]),
+            level=level,
+            style_config=style_config,
+            numbering_state=numbering_state,
+        )
         content = str(section.get("content", "")).strip()
         if content:
-            add_markdown_content(document, content, style_config=style_config)
+            add_markdown_content(
+                document,
+                content,
+                style_config=style_config,
+                numbering_state=numbering_state,
+            )
 
     if response_matrix:
         document.add_heading("响应矩阵复核表", level=1)
@@ -603,7 +827,7 @@ def check_docx_compliance(
     docx_path: Path,
     requirements: dict[str, Any],
 ) -> dict[str, Any]:
-    draft_text = extract_docx_text(docx_path)
+    draft_text = _extract_docx_paragraph_text(docx_path)
     missing: list[dict[str, Any]] = []
     covered: list[dict[str, Any]] = []
     for item in requirements.get("requirements", []):
@@ -625,6 +849,7 @@ def check_docx_compliance(
     placeholders = sorted(set(re.findall(r"【[^】]*(?:待完善|人工确认|待确认)[^】]*】", draft_text)))
     return {
         "docx_path": str(docx_path),
+        "checked_text_scope": "paragraphs_only",
         "requirement_count": len(requirements.get("requirements", [])),
         "covered_count": len(covered),
         "missing_count": len(missing),
@@ -633,6 +858,16 @@ def check_docx_compliance(
         "placeholders": placeholders,
         "status": "needs_human_review" if missing or placeholders else "ready_for_manual_final_check",
     }
+
+
+def _extract_docx_paragraph_text(docx_path: Path) -> str:
+    doc = Document(str(docx_path))
+    parts = []
+    for paragraph in doc.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
 
 
 def export_docx_to_pdf(docx_path: Path, pdf_path: Path) -> dict[str, Any]:

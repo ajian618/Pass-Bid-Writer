@@ -157,7 +157,7 @@ def _best_role(files: list[dict[str, Any]], role: str) -> dict[str, Any] | None:
 
 
 def _first_primary_document(files: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidates = [item for item in files if item.get("suffix") in {".pdf", ".docx", ".txt", ".md"}]
+    candidates = [item for item in files if item.get("suffix") in {".pdf", ".doc", ".docx", ".txt", ".md"}]
     return candidates[0] if candidates else None
 
 
@@ -169,6 +169,6 @@ def _first_non_tender_document(
     candidates = [
         item
         for item in files
-        if item.get("path") != tender_path and item.get("suffix") in {".pdf", ".docx", ".txt", ".md"}
+        if item.get("path") != tender_path and item.get("suffix") in {".pdf", ".doc", ".docx", ".txt", ".md"}
     ]
     return candidates[0] if candidates else None
