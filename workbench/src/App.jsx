@@ -1,21 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Archive,
   ArrowClockwise,
   BookOpenText,
   Buildings,
-  CaretRight,
   CheckCircle,
   ClipboardText,
-  CloudArrowDown,
   Database,
   FileDoc,
+  FilePdf,
   FileText,
   FolderOpen,
   Gauge,
+  Gear,
+  ImageSquare,
   ListChecks,
   MagnifyingGlass,
   PlayCircle,
+  Plus,
   ShieldCheck,
   SquaresFour,
   UploadSimple,
@@ -24,23 +26,14 @@ import {
 } from "@phosphor-icons/react";
 
 const STAGES = [
-  "资料导入",
-  "角色确认",
-  "证据提取",
-  "规范获取",
-  "蓝图匹配",
-  "任务书确认",
-  "章节生成",
-  "图表生成",
-  "文字复核",
-  "视觉复核",
-  "文档装配",
-  "输出交付",
+  "资料导入", "角色确认", "证据提取", "规范获取", "蓝图匹配", "任务书确认",
+  "章节生成", "图表生成", "文字复核", "视觉复核", "文档装配", "输出交付",
 ];
 
 const NAV_ITEMS = [
   { id: "overview", label: "项目总览", icon: Gauge },
   { id: "sources", label: "资料与依据", icon: Database },
+  { id: "drawings", label: "图纸中心", icon: ImageSquare },
   { id: "blueprint", label: "成品蓝图", icon: SquaresFour },
   { id: "task", label: "编制任务书", icon: ClipboardText },
   { id: "chapters", label: "章节生产", icon: FileText },
@@ -48,83 +41,116 @@ const NAV_ITEMS = [
   { id: "delivery", label: "交付中心", icon: Archive },
 ];
 
-const API = "";
+const ROLE_LABELS = {
+  tender: "招标文件",
+  design_report: "初设/批复",
+  budget: "预算/清单",
+  drawing: "设计图纸",
+  standard: "规范标准",
+  accepted_bid: "已通过技术标",
+  attachment: "其他附件",
+};
+
+const STATUS = {
+  ready: ["可生成", "success"],
+  generated: ["已确认", "success"],
+  awaiting_approval: ["待本章确认", "warning"],
+  needs_input: ["待补资料", "warning"],
+  available: ["已取得", "success"],
+  pending_download: ["待下载", "warning"],
+  needs_confirmation: ["待核验", "danger"],
+  not_applicable: ["不适用", "neutral"],
+  resolved: ["已解决", "success"],
+  dismissed: ["已忽略", "neutral"],
+  open: ["待处理", "warning"],
+  confirmed: ["已确认", "success"],
+  rejected: ["已拒绝", "neutral"],
+  pending_analysis: ["待识别", "warning"],
+  pending_confirmation: ["待确认", "warning"],
+  missing_pdf: ["缺少PDF", "danger"],
+  awaiting_confirmation: ["待确认任务书", "warning"],
+  awaiting_role_confirmation: ["待确认文件角色", "warning"],
+  ready_for_generation: ["可逐章生成", "success"],
+  ready_for_assembly: ["可装配", "success"],
+  visual_analysis_pending: ["待视觉分析", "warning"],
+  generating: ["逐章生产中", "warning"],
+  draft_generated: ["初稿已生成", "success"],
+  reviewed: ["复核完成", "success"],
+  partial_draft: ["部分章节完成", "warning"],
+  generation_failed: ["生成失败", "danger"],
+  analyzing_visuals: ["视觉分析中", "warning"],
+  visual_analysis_failed: ["视觉分析失败", "danger"],
+  empty: ["未导入", "neutral"],
+  not_started: ["未开始", "neutral"],
+  duplicate: ["重复文件", "neutral"],
+};
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || "操作失败");
+  const headers = options.body instanceof FormData
+    ? (options.headers || {})
+    : { "Content-Type": "application/json", ...(options.headers || {}) };
+  const response = await fetch(path, { ...options, headers });
+  const type = response.headers.get("content-type") || "";
+  const payload = type.includes("application/json")
+    ? await response.json().catch(() => ({}))
+    : await response.text();
+  if (!response.ok) throw new Error(payload?.detail || payload || "操作失败");
   return payload;
 }
 
 function StatusPill({ value }) {
-  const map = {
-    ready: ["可生成", "success"],
-    generated: ["已生成", "success"],
-    needs_input: ["待补资料", "warning"],
-    blocked: ["已阻断", "danger"],
-    available: ["已取得", "success"],
-    pending_download: ["待下载", "warning"],
-    needs_confirmation: ["待核验版本", "danger"],
-    not_applicable: ["不适用", "neutral"],
-    resolved: ["已解决", "success"],
-    open: ["待处理", "warning"],
-    awaiting_confirmation: ["待确认任务书", "warning"],
-    awaiting_role_confirmation: ["待确认文件角色", "warning"],
-    ready_for_generation: ["可生成正文", "success"],
-    generating: ["生成中", "warning"],
-    draft_generated: ["初稿已生成", "success"],
-    partial_draft: ["部分章节完成", "warning"],
-    generation_failed: ["生成失败", "danger"],
-    visual_analysis_pending: ["待视觉分析", "warning"],
-    analyzing_visuals: ["视觉分析中", "warning"],
-    visual_analysis_failed: ["视觉分析失败", "danger"],
-    empty: ["未导入", "neutral"],
-    not_started: ["未开始", "neutral"],
-    duplicate: ["重复文件", "neutral"],
-  };
-  const [label, tone] = map[value] || [value || "未开始", "neutral"];
+  const [label, tone] = STATUS[value] || [value || "未开始", "neutral"];
   return <span className={`status-pill ${tone}`}>{label}</span>;
 }
 
-function ProgressRing({ value, label, detail, tone = "blue" }) {
+function fileUrl(path) {
+  return path ? `/api/files?path=${encodeURIComponent(path)}` : "#";
+}
+
+function FolderInput({ onFiles, label = "选择整个文件夹", disabled = false }) {
   return (
-    <div className="progress-stat">
-      <div className={`ring ${tone}`} style={{ "--progress": `${value * 3.6}deg` }}>
-        <span>{value}%</span>
-      </div>
-      <div>
-        <strong>{label}</strong>
-        <small>{detail}</small>
-      </div>
-    </div>
+    <label className={`button secondary folder-button ${disabled ? "disabled" : ""}`}>
+      <FolderOpen size={18} />
+      {label}
+      <input
+        type="file"
+        multiple
+        webkitdirectory=""
+        directory=""
+        disabled={disabled}
+        onChange={(event) => onFiles(Array.from(event.target.files || []))}
+      />
+    </label>
   );
 }
 
-function ImportModal({ open, onClose, onPrepared }) {
-  const [projectDir, setProjectDir] = useState("");
+function ImportModal({ open, kind = "project", onClose, onSubmitted }) {
+  const [name, setName] = useState("");
   const [projectType, setProjectType] = useState("水利工程通用");
+  const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   if (!open) return null;
+  const isCase = kind === "case";
 
   const submit = async (event) => {
     event.preventDefault();
+    if (!files.length) return setError("请先选择整个资料文件夹");
     setLoading(true);
     setError("");
     try {
-      const state = await api("/api/projects/prepare", {
-        method: "POST",
-        body: JSON.stringify({
-          project_dir: projectDir,
-          project_type: projectType,
-          expand_archives: true,
-        }),
+      const form = new FormData();
+      form.append(isCase ? "case_name" : "project_name", name.trim());
+      form.append("project_type", projectType);
+      files.forEach((file) => {
+        form.append("files", file, file.name);
+        form.append("relative_paths", file.webkitRelativePath || file.name);
       });
-      onPrepared(state);
+      const result = await api(isCase ? "/api/cases/import" : "/api/projects/import", {
+        method: "POST",
+        body: form,
+      });
+      onSubmitted(result);
       onClose();
     } catch (err) {
       setError(err.message);
@@ -138,48 +164,84 @@ function ImportModal({ open, onClose, onPrepared }) {
       <section className="modal" onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div>
-            <h2>导入待编制项目</h2>
-            <p>系统会解压资料包、识别文件角色，并建立证据库与参照库。</p>
+            <h2>{isCase ? "导入已通过案例" : "创建施工组织设计项目"}</h2>
+            <p>{isCase ? "文件夹内需同时包含招标文件和已通过技术标。" : "浏览器会保留相对目录并复制到应用数据区，原资料不改动。"}</p>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
+          <button className="icon-button" onClick={onClose}><X size={20} /></button>
         </header>
         <form onSubmit={submit}>
           <label>
-            项目资料夹
-            <div className="input-with-icon">
-              <FolderOpen size={20} />
-              <input
-                autoFocus
-                value={projectDir}
-                onChange={(event) => setProjectDir(event.target.value)}
-                placeholder="例如 C:\项目资料\某河道治理工程"
-                required
-              />
-            </div>
+            {isCase ? "案例名称" : "项目名称"}
+            <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
           </label>
           <label>
             工程类型
-            <select value={projectType} onChange={(event) => setProjectType(event.target.value)}>
-              <option>水利工程通用</option>
-              <option>河道治理工程</option>
-              <option>堤防工程</option>
-              <option>泵站工程</option>
-              <option>水闸工程</option>
-              <option>水库除险加固工程</option>
+            <select value={projectType} onChange={(e) => setProjectType(e.target.value)}>
+              <option>水利工程通用</option><option>河道治理工程</option>
+              <option>堤防工程</option><option>泵站工程</option>
+              <option>水闸工程</option><option>水库除险加固工程</option>
             </select>
           </label>
-          <div className="modal-note">
-            <ShieldCheck size={20} />
-            原始资料不会被修改；解压文件、规范原文和输出成果保存在项目目录内。
+          <div className="folder-picker">
+            <FolderInput onFiles={setFiles} label={files.length ? "重新选择文件夹" : "选择整个资料文件夹"} />
+            <div>
+              <strong>{files.length ? `已选择 ${files.length} 个文件` : "尚未选择文件夹"}</strong>
+              <span>{files[0]?.webkitRelativePath?.split("/")[0] || "支持嵌套目录、压缩包和图纸文件"}</span>
+            </div>
           </div>
+          <div className="modal-note"><ShieldCheck size={20} />旧数据不会迁移；本次导入建立全新的证据链。</div>
           {error && <div className="form-error">{error}</div>}
           <footer>
             <button type="button" className="button secondary" onClick={onClose}>取消</button>
-            <button className="button primary" disabled={loading}>
+            <button className="button primary" disabled={loading || !files.length}>
               {loading ? <ArrowClockwise className="spin" size={18} /> : <UploadSimple size={18} />}
-              {loading ? "正在建立项目…" : "导入并分析"}
+              {loading ? "正在复制…" : isCase ? "导入并学习" : "导入并分析"}
             </button>
           </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ConfigModal({ open, onClose, onSaved }) {
+  const [form, setForm] = useState({});
+  const [info, setInfo] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open) api("/api/config").then(setInfo).catch((e) => setError(e.message));
+  }, [open]);
+  if (!open) return null;
+  const save = async (event) => {
+    event.preventDefault();
+    try {
+      await api("/api/config", { method: "PATCH", body: JSON.stringify(form) });
+      onSaved();
+      onClose();
+    } catch (e) { setError(e.message); }
+  };
+  const field = (key, label, placeholder, secret = false) => (
+    <label>{label}<input type={secret ? "password" : "text"} placeholder={placeholder}
+      value={form[key] || ""} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
+  );
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section className="modal config-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <header><div><h2>模型配置</h2><p>密钥仅保存在本机应用数据目录，不写入项目仓库。</p></div>
+          <button className="icon-button" onClick={onClose}><X size={20} /></button></header>
+        <form onSubmit={save}>
+          <div className="config-grid">
+            {field("deepseek_api_key", "DeepSeek API Key", info?.configured_keys?.DEEPSEEK_API_KEY ? "已配置；留空保持不变" : "输入密钥", true)}
+            {field("deepseek_model", "DeepSeek 文字模型", "deepseek-v4-pro")}
+            {field("dashscope_api_key", "阿里云百炼 API Key", info?.configured_keys?.DASHSCOPE_API_KEY ? "已配置；留空保持不变" : "输入密钥", true)}
+            {field("qwen_plus_model", "千问视觉模型", "qwen3.7-plus-2026-05-26")}
+            {field("qwen_flash_model", "千问批处理模型", "qwen3.6-flash-2026-04-16")}
+            {field("bigmodel_api_key", "智谱 API Key", info?.configured_keys?.ZHIPU_API_KEY ? "已配置；留空保持不变" : "输入密钥", true)}
+            {field("glm_vision_model", "智谱复核模型", "glm-5v-turbo")}
+          </div>
+          {error && <div className="form-error">{error}</div>}
+          <footer><button type="button" className="button secondary" onClick={onClose}>取消</button>
+            <button className="button primary">保存配置</button></footer>
         </form>
       </section>
     </div>
@@ -189,697 +251,344 @@ function ImportModal({ open, onClose, onPrepared }) {
 function Sidebar({ active, onChange, data }) {
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <Buildings weight="fill" size={30} />
-        <div>
-          <strong>施工组织设计</strong>
-          <span>生产工作台</span>
-        </div>
-      </div>
-      <nav>
-        {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
-          <button key={id} className={active === id ? "active" : ""} onClick={() => onChange(id)}>
-            <Icon size={21} />
-            <span>{label}</span>
-            {id === "review" && data?.metrics?.open_confirmations > 0 && (
-              <b>{data.metrics.open_confirmations}</b>
-            )}
-          </button>
-        ))}
-      </nav>
-      <div className="sidebar-bottom">
-        <BookOpenText size={20} />
-        <div><strong>水利工程</strong><span>标准蓝图 v1.0</span></div>
-      </div>
+      <div className="brand"><Buildings weight="fill" size={30} /><div><strong>施工组织设计</strong><span>多模型生产台 V1</span></div></div>
+      <nav>{NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+        <button key={id} className={active === id ? "active" : ""} onClick={() => onChange(id)}>
+          <Icon size={21} /><span>{label}</span>
+          {id === "review" && data?.metrics?.open_confirmations > 0 && <b>{data.metrics.open_confirmations}</b>}
+          {id === "drawings" && data?.drawings?.some((d) => !["confirmed", "rejected"].includes(d.status)) && <i />}
+        </button>
+      ))}</nav>
+      <div className="sidebar-bottom"><BookOpenText size={20} /><div><strong>正式水利模板</strong><span>证据约束 · 人工闸门</span></div></div>
     </aside>
   );
 }
 
-function Header({ data, onImport, onRefresh }) {
-  const models = data.models || [];
-  const text = models.find((item) => item.role === "text_master");
-  const vision = models.find((item) => item.role === "vision_primary");
+function Header({ data, projects, onImport, onConfig, onRefresh, onSelect }) {
   return (
     <header className="topbar">
-      <div className="project-title">
-        <h1>{data.project?.name || "尚未导入项目"}</h1>
-        <StatusPill value={data.status === "empty" ? "not_started" : data.status} />
-        <span>{data.project?.project_type}</span>
-      </div>
-      <div className="model-strip">
-        <span className={text?.configured ? "configured" : ""}>文字：{text?.model || "DeepSeek"}</span>
-        <span className={vision?.configured ? "configured" : ""}>视觉：{vision?.model || "千问"}</span>
-      </div>
+      <div className="project-title"><h1>{data.project?.name || "施工组织设计生成台"}</h1><StatusPill value={data.status} /></div>
+      <select className="project-switcher" value={data.run_id || ""} onChange={(e) => onSelect(e.target.value)}>
+        <option value="">选择历史项目</option>
+        {projects.map((p) => <option key={p.run_id} value={p.run_id}>{p.name} · {p.stage}</option>)}
+      </select>
+      <div className="model-strip">{(data.models || []).map((m) => <span key={m.role} className={m.configured ? "configured" : ""}>{m.model} · {m.configured ? "已连接" : "未配置"}</span>)}</div>
       <div className="top-actions">
+        <button className="icon-button" onClick={onConfig} title="模型配置"><Gear size={19} /></button>
         <button className="icon-button" onClick={onRefresh} title="刷新"><ArrowClockwise size={19} /></button>
-        <button className="button primary compact" onClick={onImport}><FolderOpen size={18} />导入项目</button>
+        <button className="button primary compact" onClick={onImport}><Plus size={18} />新建项目</button>
       </div>
     </header>
   );
 }
 
-function StageRail({ current, visualStatus }) {
+function WorkflowBar({ data }) {
+  const workflow = data.workflow || {};
+  const active = ["queued", "running"].includes(workflow.status);
   return (
-    <section className="stage-rail">
-      {STAGES.map((stage, index) => {
-        const step = index + 1;
-        const done = step < current;
-        const active = step === current;
-        const needsVisionReview =
-          step === 10 && ["not_configured", "error"].includes(visualStatus);
-        return (
-          <div
-            key={stage}
-            className={`stage ${done ? "done" : ""} ${active ? "active" : ""} ${needsVisionReview ? "warning" : ""}`}
-          >
-            <div className="stage-node">
-              {needsVisionReview ? <Warning weight="fill" size={18} /> : done ? <CheckCircle weight="fill" size={22} /> : step}
-            </div>
-            <strong>{stage}</strong>
-            <span>{needsVisionReview ? "待配置/人工复核" : done ? "已完成" : active ? "进行中" : "待开始"}</span>
-          </div>
-        );
-      })}
-    </section>
+    <div className={`workflow-bar ${workflow.status || "idle"}`}>
+      <div className="workflow-identity"><span><PlayCircle size={20} /></span><div><strong>受控生产引擎</strong><small>Python 工作流 · 状态持久化</small></div></div>
+      <div className="workflow-activity">
+        {active && <ArrowClockwise className="spin" size={18} />}
+        {!active && workflow.status === "failed" && <Warning size={18} />}
+        {!active && workflow.status !== "failed" && <CheckCircle size={18} />}
+        <div><strong>{workflow.message || "等待下一步操作"}</strong><small>{workflow.error || "每一步由工作台显式触发，不存在后台自主循环"}</small></div>
+      </div>
+      <span className={`agent-state ${workflow.status || "idle"}`}>{active ? "执行中" : workflow.status === "failed" ? "失败，可重试" : "就绪"}</span>
+    </div>
   );
 }
 
-function WorkQueue({ sections, onSelect }) {
-  const [query, setQuery] = useState("");
-  const filtered = sections.filter((item) => item.title.includes(query));
-  return (
-    <section className="panel queue-panel">
-      <div className="panel-heading">
-        <div><h2>当前工作队列</h2><span>{filtered.length} 个章节任务</span></div>
-        <div className="search">
-          <MagnifyingGlass size={18} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索章节" />
-        </div>
-      </div>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr><th>章节任务</th><th>项目依据</th><th>编制依据</th><th>模型</th><th>进度</th><th>状态</th></tr>
-          </thead>
-          <tbody>
-            {filtered.map((section) => (
-              <tr key={section.code} onClick={() => onSelect(section)}>
-                <td><strong>{section.code} {section.title}</strong><small>{section.components.length} 个交付组件</small></td>
-                <td>{section.project_basis.length} 项</td>
-                <td>{section.reference_basis.length} 项</td>
-                <td><span className="model-tag">{section.model || "deepseek-v4-pro"}</span></td>
-                <td><div className="bar"><i style={{ width: `${section.completion}%` }} /></div><span>{section.completion}%</span></td>
-                <td><StatusPill value={section.status} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
+function StageRail({ current = 1 }) {
+  return <div className="stage-rail">{STAGES.map((name, i) => {
+    const n = i + 1;
+    return <div key={name} className={`stage ${n < current ? "done" : n === current ? "active" : ""}`}>
+      <div className="stage-node">{n < current ? "✓" : n}</div><strong>{name}</strong><span>{n < current ? "已完成" : n === current ? "当前" : "待执行"}</span>
+    </div>;
+  })}</div>;
 }
 
-function RiskRail({ confirmations, standards, onOpenReview }) {
-  const open = confirmations.filter((item) => item.status === "open");
-  const groups = [
-    { key: "规范待下载", label: "待下载规范", icon: CloudArrowDown, tone: "blue" },
-    { key: "资料冲突", label: "资料冲突", icon: Warning, tone: "orange" },
-    { key: "模型分歧", label: "模型分歧", icon: ShieldCheck, tone: "teal" },
-    { key: "章节输入缺失", label: "人工确认", icon: ListChecks, tone: "violet" },
-  ];
-  return (
-    <aside className="panel risk-panel">
-      <div className="panel-heading"><div><h2>风险与待办</h2><span>必须处理后才能定稿</span></div></div>
-      <div className="risk-list">
-        {groups.map(({ key, label, icon: Icon, tone }) => {
-          let count = open.filter((item) => item.category === key).length;
-          if (key === "规范待下载") count = standards.filter((item) => item.status === "pending_download").length;
-          if (key === "章节输入缺失") count = open.filter((item) => item.category.includes("缺失") || item.category.includes("确认")).length;
-          return (
-            <button key={key} className={`risk-item ${tone}`} onClick={onOpenReview}>
-              <Icon size={24} />
-              <div><strong>{label}</strong><span>{count ? `${count} 项需要处理` : "当前无待处理项"}</span></div>
-              <b>{count}</b><CaretRight size={18} />
-            </button>
-          );
-        })}
-      </div>
-      <button className="text-button" onClick={onOpenReview}>查看全部风险与待办 <CaretRight size={16} /></button>
-    </aside>
-  );
+function Metric({ value, displayValue, label, detail, tone = "blue" }) {
+  return <div className="progress-stat"><div className={`ring ${tone}`} style={{ "--progress": `${Math.max(0, Math.min(100, value || 0)) * 3.6}deg` }}><span>{displayValue ?? `${value || 0}%`}</span></div>
+    <div><strong>{label}</strong><small>{detail}</small></div></div>;
 }
 
-function Overview({ data, setActive, onSelectSection, onAction }) {
-  const metrics = data.metrics || {};
+function Overview({ data, onNavigate, action }) {
+  const m = data.metrics || {};
+  const open = (data.confirmations || []).filter((x) => x.status === "open").slice(0, 5);
   return (
     <>
-      <StageRail
-        current={data.stage_index || 1}
-        visualStatus={data.visual_report?.status}
-      />
       <div className="main-grid">
-        <WorkQueue sections={data.sections || []} onSelect={onSelectSection} />
-        <RiskRail
-          confirmations={data.confirmations || []}
-          standards={data.standards || []}
-          onOpenReview={() => setActive("review")}
-        />
-      </div>
-      <div className="lower-grid">
-        <section className="panel metrics-panel">
-          <div className="panel-heading"><div><h2>生产进度概览</h2><span>由真实证据和任务状态计算</span></div></div>
+        <section className="panel">
+          <div className="panel-heading"><div><h2>生产状态</h2><span>{data.project?.project_type} · {data.project?.file_count || 0} 份源文件</span></div><StatusPill value={data.status} /></div>
           <div className="metric-row">
-            <ProgressRing value={metrics.requirement_coverage || 0} label="要求覆盖率" detail={`${metrics.requirement_count || 0} 项招标要求`} />
-            <ProgressRing value={Math.min(100, Math.round((metrics.fact_count || 0) / Math.max(metrics.file_count || 1, 1) * 12))} label="资料利用率" detail={`${metrics.fact_count || 0} 项项目事实`} tone="teal" />
-            <ProgressRing value={metrics.standards_readiness || 0} label="规范齐备率" detail={`${metrics.standards_ready || 0} / ${metrics.standards_count || 0} 份`} tone="amber" />
-            <ProgressRing value={metrics.chapter_completion || 0} label="章节完成率" detail={`${metrics.section_count || 0} 个章节`} tone="green" />
+            <Metric value={m.requirement_coverage} label="要求覆盖" detail={`${m.requirement_count || 0} 项招标要求`} />
+            <Metric value={m.standards_readiness} label="规范就绪" detail={`${m.standards_ready || 0}/${m.standards_count || 0} 份`} tone="teal" />
+            <Metric value={m.chapter_completion} label="章节完成" detail={`${m.section_count || 0} 个章节`} tone="amber" />
+            <Metric value={m.fact_count ? Math.min(100, m.fact_count * 4) : 0} displayValue={m.fact_count || 0} label="事实证据" detail="条可追溯事实" tone="green" />
           </div>
           <div className="action-row">
-            <button className="button primary" onClick={() => onAction("continue")}><PlayCircle size={20} />继续执行流程</button>
-            <button className="button secondary" onClick={() => setActive("task")}><FolderOpen size={20} />打开编制任务书</button>
-            <button className="button secondary" onClick={() => onAction("reports")}><ListChecks size={20} />生成补漏清单</button>
+            <button className="button primary" disabled={!data.run_id} onClick={() => onNavigate(nextView(data))}><PlayCircle size={18} />继续当前流程</button>
+            {data.run_id && <button className="button secondary" onClick={() => action("export-reports")}><Archive size={18} />更新控制报告</button>}
           </div>
         </section>
-        <section className="panel recent-panel">
-          <div className="panel-heading"><div><h2>项目基线</h2><span>当前生产任务的可信输入</span></div></div>
-          <dl>
-            <div><dt>资料文件</dt><dd>{metrics.file_count || 0}</dd></div>
-            <div><dt>已提取事实</dt><dd>{metrics.fact_count || 0}</dd></div>
-            <div><dt>引用规范</dt><dd>{metrics.standards_count || 0}</dd></div>
-            <div><dt>高风险项</dt><dd className="danger-text">{metrics.high_risks || 0}</dd></div>
-          </dl>
-          <button className="text-button" onClick={() => setActive("sources")}>查看全部项目依据 <CaretRight size={16} /></button>
+        <section className="panel risk-panel">
+          <div className="panel-heading"><div><h2>需要你处理</h2><span>{m.open_confirmations || 0} 项未关闭，{m.high_risks || 0} 项高风险</span></div></div>
+          <div className="risk-list">{open.length ? open.map((x, i) => <button className="risk-item" key={`${x.title}-${i}`} onClick={() => onNavigate("review")}><Warning size={20} /><div><strong>{x.title}</strong><span>{x.detail}</span></div></button>) : <div className="empty-state"><CheckCircle size={28} /><p>当前没有待处理项</p></div>}</div>
+        </section>
+      </div>
+      <div className="lower-grid">
+        <section className="panel recent-panel"><div className="panel-heading"><div><h2>证据链摘要</h2><span>项目事实和编制依据分开管理</span></div></div>
+          <dl><div><dt>项目事实</dt><dd>{data.facts?.length || 0}</dd></div><div><dt>招标要求</dt><dd>{data.requirements?.requirement_count || 0}</dd></div><div><dt>规范文件</dt><dd>{data.standards?.length || 0}</dd></div><div><dt>已确认图纸</dt><dd>{data.drawings?.filter((d) => d.status === "confirmed").length || 0}</dd></div></dl>
+        </section>
+        <section className="panel recent-panel"><div className="panel-heading"><div><h2>运行目录</h2><span>所有运行数据位于本机 LOCALAPPDATA</span></div></div>
+          <div className="path-box">{data.project?.project_dir || "新建项目后显示"}</div>
         </section>
       </div>
     </>
   );
 }
 
-function SourcesView({ data, onData, onToast, onConfirmRoles, onAnalyzeVisuals }) {
+function Sources({ data, setData, action, busy, notify }) {
   const [tab, setTab] = useState("files");
-  const [updating, setUpdating] = useState("");
-
-  const changeRole = async (file, role) => {
-    setUpdating(file.path);
-    try {
-      const next = await api(`/api/runs/${data.run_id}/files/role`, {
-        method: "PATCH",
-        body: JSON.stringify({ path: file.path, role }),
-      });
-      onData(next);
-      onToast("文件角色已确认，并按新角色重建证据与任务书");
-    } catch (error) {
-      onToast(error.message);
-    } finally {
-      setUpdating("");
-    }
+  const uploadSources = async (files) => {
+    if (!files.length) return;
+    const form = new FormData();
+    files.forEach((f) => { form.append("files", f, f.name); form.append("relative_paths", f.webkitRelativePath || f.name); });
+    const result = await api(`/api/runs/${data.run_id}/sources`, { method: "POST", body: form });
+    action(null, null, result.job);
   };
-
-  const uploadStandard = async (standard, file) => {
-    if (!file) return;
-    setUpdating(standard.code);
-    const body = new FormData();
-    body.append("file", file);
+  const roleChange = async (item, role) => {
     try {
-      const response = await fetch(
-        `/api/standards/upload?run_id=${data.run_id}&standard_code=${encodeURIComponent(standard.code)}`,
-        { method: "POST", body },
-      );
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || "规范上传失败");
-      const next = await api(`/api/dashboard?run_id=${data.run_id}`);
-      onData(next);
-      onToast(`${standard.code} 已进入本地规范库`);
-    } catch (error) {
-      onToast(error.message);
-    } finally {
-      setUpdating("");
-    }
-  };
-
-  const changeStandardStatus = async (standard, status) => {
-    setUpdating(standard.code);
-    try {
-      const next = await api("/api/standards/status", {
-        method: "PATCH",
-        body: JSON.stringify({
-          run_id: data.run_id,
-          standard_code: standard.code,
-          status,
-          resolution: status === "not_applicable" ? "人工确认本项目不适用" : "",
-        }),
-      });
-      onData(next);
-      onToast(`${standard.code} 状态已更新`);
-    } catch (error) {
-      onToast(error.message);
-    } finally { setUpdating(""); }
-  };
-
-  return (
-    <section className="workspace-view">
-      <div className="view-heading">
-        <div><h2>资料与依据</h2><p>每项项目事实和规范依据都保留来源位置与状态。</p></div>
-        {data.status === "awaiting_role_confirmation" && (
-          <button className="button primary" onClick={onConfirmRoles}>
-            <CheckCircle size={18} />确认全部文件角色
-          </button>
-        )}
-        {["visual_analysis_pending", "visual_analysis_failed"].includes(data.status) && (
-          <button className="button primary" onClick={onAnalyzeVisuals}>
-            <PlayCircle size={18} />运行多模态资料分析
-          </button>
-        )}
-      </div>
-      <div className="tabs">
-        <button className={tab === "files" ? "active" : ""} onClick={() => setTab("files")}>项目资料 {data.files.length}</button>
-        <button className={tab === "facts" ? "active" : ""} onClick={() => setTab("facts")}>项目事实 {data.facts.length}</button>
-        <button className={tab === "standards" ? "active" : ""} onClick={() => setTab("standards")}>规范库 {data.standards.length}</button>
-        <button className={tab === "standard_clauses" ? "active" : ""} onClick={() => setTab("standard_clauses")}>规范条款 {data.standard_clauses?.length || 0}</button>
-        <button className={tab === "case_assets" ? "active" : ""} onClick={() => setTab("case_assets")}>案例资产 {data.case_assets?.length || 0}</button>
-        <button className={tab === "visual_jobs" ? "active" : ""} onClick={() => setTab("visual_jobs")}>视觉证据 {data.visual_jobs?.length || 0}</button>
-      </div>
-      <div className="panel list-panel">
-        {tab === "files" && data.files.map((file) => (
-          <div className="data-row" key={file.path}>
-            <FileDoc size={22} />
-            <div><strong>{file.name}</strong><span>{file.path}</span></div>
-            <select
-              className="role-select"
-              value={file.role}
-              disabled={updating === file.path}
-              onChange={(event) => changeRole(file, event.target.value)}
-              aria-label={`${file.name} 文件角色`}
-            >
-              <option value="tender">招标文件</option>
-              <option value="design_report">初设/设计报告</option>
-              <option value="budget">预算/工程量清单</option>
-              <option value="drawing">图纸/CAD</option>
-              <option value="standard">规范原文</option>
-              <option value="accepted_bid">历史成品</option>
-              <option value="attachment">其他附件</option>
-            </select>
-            <StatusPill value={file.is_duplicate ? "duplicate" : file.confidence > .75 ? "available" : "open"} />
-          </div>
-        ))}
-        {tab === "facts" && data.facts.map((fact, index) => (
-          <div className="data-row" key={`${fact.key}-${index}`}><CheckCircle size={22} /><div><strong>{fact.key}：{fact.value}{fact.unit}</strong><span>{fact.source_path}{fact.source_page ? ` · 第${fact.source_page}页` : ""}</span></div><span>置信度 {Math.round(fact.confidence * 100)}%</span><StatusPill value={fact.status === "extracted" ? "available" : fact.status} /></div>
-        ))}
-        {tab === "standards" && data.standards.map((standard) => (
-          <div className="data-row" key={standard.code}>
-            <BookOpenText size={22} />
-            <div>
-              <strong>{standard.code} {standard.title}</strong>
-              <span>招标文件第 {standard.source_page || "—"} 页 · {standard.official_platform}</span>
-            </div>
-            <div className="row-actions">
-              <a href={standard.official_url} target="_blank" rel="noreferrer">官方平台</a>
-              <label className="upload-link">
-                <UploadSimple size={15} />
-                {updating === standard.code ? "上传中" : "上传原文"}
-                <input
-                  type="file"
-                  accept=".pdf,.doc,.docx"
-                  disabled={updating === standard.code}
-                  onChange={(event) => uploadStandard(standard, event.target.files?.[0])}
-                />
-              </label>
-              <select className="mini-select" value={standard.status} onChange={(event) => changeStandardStatus(standard, event.target.value)}>
-                <option value="pending_download">待下载</option>
-                <option value="needs_confirmation">待核验</option>
-                <option value="not_applicable">不适用</option>
-                {standard.local_path && <option value="available">已取得</option>}
-              </select>
-            </div>
-            <StatusPill value={standard.status} />
-          </div>
-        ))}
-        {tab === "standard_clauses" && (data.standard_clauses || []).map((clause, index) => (
-          <div className="data-row" key={`${clause.standard_code}-${clause.clause_id}-${index}`}>
-            <BookOpenText size={22} />
-            <div><strong>{clause.standard_code} {clause.clause_id}</strong><span>{clause.text}</span></div>
-            <span>原文第 {clause.page || "—"} 页</span>
-            <StatusPill value="available" />
-          </div>
-        ))}
-        {tab === "case_assets" && (data.case_assets || []).map((asset) => (
-          <div className="data-row" key={asset.asset_id}>
-            <Archive size={22} />
-            <div><strong>{asset.case_title} · {asset.title}</strong><span>{asset.source_path || "公司案例库"}</span></div>
-            <span>{asset.reuse_rule === "layout_only" ? "仅复用版式" : asset.reuse_rule === "replace_parameters" ? "替换参数后使用" : "仅复用结构"}</span>
-            <StatusPill value="available" />
-          </div>
-        ))}
-        {tab === "visual_jobs" && (data.visual_jobs || []).map((job) => (
-          <div className="data-row" key={job.job_id}>
-            <FileText size={22} />
-            <div><strong>{job.source_name}</strong><span>{job.error || job.result?.document_summary || "等待结构化"}</span></div>
-            <span>{job.model || (job.source_role === "drawing" ? "千问视觉主模型" : "千问批处理模型")}</span>
-            <StatusPill value={job.status === "ready" ? "available" : job.status === "failed" ? "blocked" : "open"} />
-          </div>
-        ))}
-        {!data[tab]?.length && <div className="empty-state">导入项目后，这里会显示可追溯的依据。</div>}
-      </div>
-    </section>
-  );
-}
-
-function BlueprintView({ data, onToast }) {
-  const [caseDir, setCaseDir] = useState("");
-  const [ingesting, setIngesting] = useState(false);
-  const ingest = async () => {
-    if (!caseDir.trim()) return;
-    setIngesting(true);
-    try {
-      const result = await api("/api/cases/ingest", {
-        method: "POST",
-        body: JSON.stringify({
-          project_dir: caseDir,
-          project_type: data.project?.project_type || "",
-          auto_visual: true,
-        }),
-      });
-      onToast(`已学习案例：${result.case?.title || "公司成品"}；重新导入项目后进入参照库`);
-      setCaseDir("");
-    } catch (error) {
-      onToast(error.message);
-    } finally { setIngesting(false); }
+      const next = await api(`/api/runs/${data.run_id}/files/role`, { method: "PATCH", body: JSON.stringify({ path: item.path, role }) });
+      setData(next); notify("文件角色已更新，已生成新的分析任务");
+    } catch (e) { notify(e.message, true); }
   };
   return (
-    <section className="workspace-view">
-      <div className="view-heading"><div><h2>{data.blueprint?.title}</h2><p>受控版本 {data.blueprint?.version} · 历史案例只补充结构和资产，不覆盖项目事实。</p></div><StatusPill value="available" /></div>
-      <div className="case-ingest panel">
-        <div><strong>学习公司已通过成品</strong><span>资料夹内需同时包含招标文件和已通过技术标；系统提取结构、措辞和版式资产。</span></div>
-        <input value={caseDir} onChange={(event) => setCaseDir(event.target.value)} placeholder="projects/passed_cases/某项目" />
-        <button className="button secondary" onClick={ingest} disabled={!caseDir.trim() || ingesting}><UploadSimple size={18} />{ingesting ? "正在学习…" : "导入案例"}</button>
-      </div>
-      <div className="blueprint-grid">
-        {data.sections.map((section) => (
-          <article className="blueprint-section" key={section.code}>
-            <span>{section.code}</span><div><h3>{section.title}</h3><p>{section.purpose}</p><small>{section.components.join(" · ")}</small></div>
-          </article>
-        ))}
-      </div>
-    </section>
+    <div className="workspace-view">
+      <div className="view-heading"><div><h2>资料与依据</h2><p>确认资料角色后，视觉模型才会读取扫描件、复杂表格和图纸 PDF。</p></div>
+        <div className="heading-actions"><FolderInput disabled={busy} onFiles={uploadSources} label="补充资料文件夹" />
+          <button className="button primary" disabled={!data.run_id || busy} onClick={() => action("confirm-file-roles")}>确认文件角色</button></div></div>
+      <div className="tabs"><button className={tab === "files" ? "active" : ""} onClick={() => setTab("files")}>项目文件</button><button className={tab === "standards" ? "active" : ""} onClick={() => setTab("standards")}>规范清单</button><button className={tab === "facts" ? "active" : ""} onClick={() => setTab("facts")}>事实证据</button></div>
+      <section className="panel">
+        {tab === "files" && <div className="table-wrap"><table><thead><tr><th>文件</th><th>角色</th><th>状态</th><th>来源</th></tr></thead><tbody>{(data.files || []).map((f) => <tr key={f.path}><td><strong>{f.name}</strong><small>{f.suffix?.toUpperCase()} · {f.size ? `${Math.round(f.size / 1024)} KB` : ""}</small></td><td><select className="role-select" value={f.role} onChange={(e) => roleChange(f, e.target.value)}>{Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></td><td><StatusPill value={f.is_duplicate ? "duplicate" : "ready"} /></td><td><a href={fileUrl(f.path)} target="_blank">查看原件</a></td></tr>)}</tbody></table></div>}
+        {tab === "standards" && <div className="table-wrap"><table><thead><tr><th>编号</th><th>标准名称</th><th>招标引用</th><th>状态</th></tr></thead><tbody>{(data.standards || []).map((s) => <tr key={`${s.code}-${s.title}`}><td>{s.code || "待核对"}</td><td><strong>{s.title}</strong><small>{s.version || "版本待确认"}</small></td><td>{s.source_page ? `第 ${s.source_page} 页` : "未定位页码"}</td><td><StatusPill value={s.status} /></td></tr>)}</tbody></table></div>}
+        {tab === "facts" && <div className="table-wrap"><table><thead><tr><th>事实</th><th>取值</th><th>来源</th><th>置信度</th></tr></thead><tbody>{(data.facts || []).map((f, i) => <tr key={`${f.key}-${i}`}><td>{f.key}</td><td><strong>{f.value} {f.unit}</strong></td><td>{f.source_path === "人工确认" ? "人工确认" : `${f.source_path?.split(/[\\/]/).pop() || ""}${f.source_page ? ` · 第${f.source_page}页` : ""}`}</td><td>{Math.round((f.confidence || 0) * 100)}%</td></tr>)}</tbody></table></div>}
+      </section>
+      <div className="footer-actions"><button className="button primary" disabled={busy || !data.run_id} onClick={() => action("analyze-visuals")}><ImageSquare size={18} />运行千问视觉分析</button><span>DWG 只保存，不会送入模型；必须先提供对应 PDF。</span></div>
+    </div>
   );
 }
 
-function TaskView({ data, onConfirm }) {
-  return (
-    <section className="workspace-view">
-      <div className="view-heading">
-        <div><h2>施组编制任务书</h2><p>确认每章要交付什么、依据什么、还缺什么，确认后才允许批量写正文。</p></div>
-        <button className="button primary" onClick={onConfirm} disabled={!data.run_id || data.status !== "awaiting_confirmation"}><CheckCircle size={19} />确认任务书</button>
-      </div>
-      <div className="panel task-table">
-        <table><thead><tr><th>章节</th><th>完成标准</th><th>交付组件</th><th>项目依据</th><th>编制依据</th><th>缺失输入</th></tr></thead>
-          <tbody>{data.sections.map((section) => <tr key={section.code}><td><strong>{section.code} {section.title}</strong></td><td>{section.acceptance.join("；")}</td><td>{section.components.join("、")}</td><td>{section.project_basis.length} 项</td><td>{section.reference_basis.length} 项</td><td>{section.missing_inputs.length ? section.missing_inputs.join("、") : "—"}</td></tr>)}</tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function ChapterView({ data, selected, onSelect, onGenerate }) {
-  const section = selected || data.sections[0];
-  const generation = data.generation || {};
-  return (
-    <section className="workspace-view chapter-view">
-      <div className="chapter-list panel">
-        <div className="panel-heading"><div><h2>章节目录</h2><span>{data.sections.length} 章</span></div></div>
-        {data.sections.map((item) => <button key={item.code} className={item.code === section?.code ? "active" : ""} onClick={() => onSelect(item)}><span>{item.code}</span><div><strong>{item.title}</strong><small>{item.completion}% · {item.components.length} 个组件</small></div></button>)}
-      </div>
-      <div className="chapter-detail panel">
-        {section && <>
-          <div className="panel-heading"><div><h2>{section.code} {section.title}</h2><span>{section.purpose}</span></div><StatusPill value={section.status} /></div>
-          <h3>应交付组件</h3><div className="component-list">{section.components.map((item) => <div key={item}><FileText size={20} /><span>{item}</span><StatusPill value={section.status === "generated" ? "generated" : "not_started"} /></div>)}</div>
-          <h3>完成标准</h3><ul>{section.acceptance.map((item) => <li key={item}>{item}</li>)}</ul>
-          {section.content && <><h3>已生成正文预览</h3><pre className="content-preview">{section.content}</pre></>}
-        </>}
-      </div>
-      <aside className="basis-panel panel">
-        <div className="panel-heading"><div><h2>章节依据</h2><span>生成正文时只使用以下内容</span></div></div>
-        <h3>项目依据</h3>{section?.project_basis.map((item) => <p key={item}>{item}</p>)}{!section?.project_basis.length && <em>暂无已核验项目依据</em>}
-        <h3>编制依据</h3>{section?.reference_basis.map((item) => <p key={item}>{item}</p>)}
-        <h3>缺失输入</h3>{section?.missing_inputs.map((item) => <p className="missing" key={item}>{item}</p>)}{!section?.missing_inputs.length && <em>本章输入已齐备</em>}
-        {data.status === "generating" && (
-          <div className="generation-progress">
-            <strong>DeepSeek 正在并行生成</strong>
-            <span>{generation.completed || 0} / {generation.total || data.sections.length} 章完成</span>
-            <div className="bar"><i style={{ width: `${Math.round((generation.completed || 0) / Math.max(generation.total || data.sections.length, 1) * 100)}%` }} /></div>
-            <small>任务在后台运行，可以切换页面。</small>
-          </div>
-        )}
-        <button className="button primary wide" onClick={onGenerate} disabled={!data.run_id || !["ready_for_generation", "generation_failed", "partial_draft"].includes(data.status)}><PlayCircle size={19} />{data.status === "generating" ? "正在生成全部章节" : data.status === "generation_failed" ? "恢复并重试失败章节" : "批量生成全部章节"}</button>
-      </aside>
-    </section>
-  );
-}
-
-function ReviewView({ data, onResolve, onResolveDifference }) {
-  const [filter, setFilter] = useState("open");
-  const [query, setQuery] = useState("");
-  const [page, setPage] = useState(0);
-  const pageSize = 30;
-  const confirmationRows = data.confirmations
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => {
-      if (filter === "open" && item.status !== "open") return false;
-      if (filter === "resolved" && item.status === "open") return false;
-      if (filter === "high" && !(item.status === "open" && item.severity === "high")) return false;
-      const haystack = `${item.title} ${item.detail} ${item.category} ${(item.affected_sections || []).join(" ")}`;
-      return haystack.toLowerCase().includes(query.trim().toLowerCase());
-    });
-  const pageCount = Math.max(1, Math.ceil(confirmationRows.length / pageSize));
-  const safePage = Math.min(page, pageCount - 1);
-  const visibleConfirmations = confirmationRows.slice(safePage * pageSize, (safePage + 1) * pageSize);
-  return (
-    <section className="workspace-view">
-      <div className="view-heading"><div><h2>复核中心</h2><p>冲突、缺失和模型分歧不会被系统自动投票掩盖。</p></div></div>
-      <div className="review-columns">
-        <section className="panel">
-          <div className="panel-heading"><div><h2>待确认事项</h2><span>{data.confirmations.filter((item) => item.status === "open").length} 项未关闭</span></div></div>
-          <div className="review-toolbar">
-            <div className="search"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索标题、来源或影响章节" /></div>
-            <select aria-label="确认项筛选" value={filter} onChange={(event) => { setFilter(event.target.value); setPage(0); }}>
-              <option value="open">未关闭</option>
-              <option value="high">高风险</option>
-              <option value="resolved">已处理</option>
-              <option value="all">全部</option>
-            </select>
-          </div>
-          {visibleConfirmations.map(({ item, index }) => <article className={`finding ${item.severity}`} key={`${item.title}-${index}`}><Warning size={22} /><div><strong>{item.title}</strong><p>{item.detail}</p><small>{item.category} · 影响：{item.affected_sections.join("、") || "全局"}</small></div><div className="finding-actions"><StatusPill value={item.status} />{item.status === "open" && <button className="text-button compact-link" onClick={() => onResolve(index)}>标记已处理</button>}</div></article>)}
-          {!visibleConfirmations.length && <div className="empty-state">当前筛选条件下没有确认项。</div>}
-          <div className="pagination">
-            <button className="button secondary compact" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>上一页</button>
-            <span>第 {safePage + 1} / {pageCount} 页 · {confirmationRows.length} 项</span>
-            <button className="button secondary compact" disabled={safePage + 1 >= pageCount} onClick={() => setPage(safePage + 1)}>下一页</button>
-          </div>
-        </section>
-        <section className="panel"><div className="panel-heading"><div><h2>模型差异</h2><span>不一致时交由人工判断</span></div></div>{data.model_differences.length ? data.model_differences.map((item, index) => <article className="finding" key={index}><ShieldCheck size={22} /><div><strong>{item.task}</strong><p>{typeof item.difference === "string" ? item.difference : JSON.stringify(item.difference, null, 2)}</p><small>{item.primary_model} ↔ {item.review_model}</small></div><div className="finding-actions"><StatusPill value={item.status} />{item.status === "open" && <button className="text-button compact-link" onClick={() => onResolveDifference(index)}>记录人工结论</button>}</div></article>) : <div className="empty-state">当前没有已记录的模型差异。</div>}</section>
-      </div>
-    </section>
-  );
-}
-
-function DeliveryView({ data, onReports, onReview }) {
-  const reports = Object.entries(data.reports || {});
-  const assets = Object.entries(data.assets || {});
-  return (
-    <section className="workspace-view">
-      <div className="view-heading"><div><h2>交付中心</h2><p>所有报告都来自当前生产状态，可随项目更新重新生成。</p></div><div className="heading-actions"><button className="button secondary" onClick={onReview} disabled={!data.docx?.docx_path}><ShieldCheck size={18} />重新执行四项复核</button><button className="button primary" onClick={onReports} disabled={!data.run_id}><ArrowClockwise size={18} />重新生成报告</button></div></div>
-      <div className="delivery-grid">
-        {reports.map(([key, path]) => <article className="delivery-card" key={key}><FileDoc size={30} /><div><strong>{path.split(/[\\/]/).pop()}</strong><span>{path}</span></div><a href={`/api/files?path=${encodeURIComponent(path)}`}>打开文件</a></article>)}
-        {assets.map(([key, path]) => <article className="delivery-card" key={key}><SquaresFour size={30} /><div><strong>{path.split(/[\\/]/).pop()}</strong><span>可编辑图表源文件</span></div><a href={`/api/files?path=${encodeURIComponent(path)}`}>打开文件</a></article>)}
-        {data.docx?.docx_path && <article className="delivery-card featured"><FileDoc size={30} /><div><strong>施工组织设计_初稿.docx</strong><span>{data.docx.docx_path}</span></div><a href={`/api/files?path=${encodeURIComponent(data.docx.docx_path)}`}>打开文件</a></article>}
-        {!reports.length && <div className="empty-state panel">导入项目后，系统会自动生成六份控制与复核报告。</div>}
-      </div>
-    </section>
-  );
-}
-
-export function App() {
-  const [data, setData] = useState(null);
-  const [active, setActive] = useState("overview");
+function Drawings({ data, setData, notify }) {
   const [selected, setSelected] = useState(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [toast, setToast] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const refresh = async () => {
+  const drawing = (data.drawings || []).find((d) => d.drawing_id === selected) || data.drawings?.[0];
+  useEffect(() => { if (!selected && data.drawings?.[0]) setSelected(data.drawings[0].drawing_id); }, [data.drawings, selected]);
+  const [draft, setDraft] = useState({});
+  useEffect(() => { if (drawing) setDraft({ ...drawing, crop: drawing.crop || {} }); }, [drawing?.drawing_id]);
+  const save = async (status) => {
     try {
-      setData(await api("/api/dashboard"));
-    } catch (error) {
-      setToast(error.message);
-    }
+      const payload = {
+        drawing_no: draft.drawing_no || "", title: draft.title || "", caption: draft.caption || "",
+        placement: draft.placement || "inline", applicable_sections: draft.applicable_sections || [],
+        crop: draft.crop || {}, status,
+      };
+      const next = await api(`/api/runs/${data.run_id}/drawings/${drawing.drawing_id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      setData(next); notify(status === "confirmed" ? "图纸使用方案已确认" : "图纸已拒绝");
+    } catch (e) { notify(e.message, true); }
   };
-  useEffect(() => { refresh(); }, []);
+  if (!data.drawings?.length) return <div className="empty-page"><ImageSquare size={42} /><h2>还没有图纸资产</h2><p>确认文件角色并运行视觉分析后，图纸 PDF 会出现在这里。</p></div>;
+  return (
+    <div className="drawing-layout">
+      <section className="panel drawing-list"><div className="panel-heading"><div><h2>图纸资产</h2><span>{data.drawings.length} 项</span></div></div>
+        {data.drawings.map((d) => <button key={d.drawing_id} className={drawing?.drawing_id === d.drawing_id ? "active" : ""} onClick={() => setSelected(d.drawing_id)}><ImageSquare size={20} /><div><strong>{d.drawing_no || d.title || "未命名图纸"}</strong><small>{d.source_pdf_name || d.source_dwg_name}</small></div><StatusPill value={d.status} /></button>)}</section>
+      <section className="panel drawing-canvas"><div className="panel-heading"><div><h2>{drawing?.title}</h2><span>{drawing?.source_pdf_name || "尚无图纸PDF"}</span></div>{drawing?.source_pdf_path && <a href={fileUrl(drawing.source_pdf_path)} target="_blank">查看整张 PDF</a>}</div>
+        {drawing?.preview_path ? <div className="drawing-preview"><img src={fileUrl(drawing.preview_path)} alt={drawing.title} /></div> : <div className="empty-state"><Warning size={28} /><p>{drawing?.source_pdf_path ? "尚未生成图纸预览，请先运行视觉分析" : "仅有 DWG，V1 不会假装已经识别"}</p></div>}
+      </section>
+      <section className="panel drawing-form"><div className="panel-heading"><div><h2>插图设置</h2><span>确认后才会进入正文</span></div></div>
+        <label>图号<input value={draft.drawing_no || ""} onChange={(e) => setDraft({ ...draft, drawing_no: e.target.value })} /></label>
+        <label>图名<input value={draft.title || ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></label>
+        <label>图注<textarea value={draft.caption || ""} onChange={(e) => setDraft({ ...draft, caption: e.target.value })} /></label>
+        <label>插入方式<select value={draft.placement || "inline"} onChange={(e) => setDraft({ ...draft, placement: e.target.value })}><option value="inline">章节局部图</option><option value="landscape_page">横向整页图</option></select></label>
+        <label>插入章节<select multiple value={draft.applicable_sections || []} onChange={(e) => setDraft({ ...draft, applicable_sections: Array.from(e.target.selectedOptions, (o) => o.value) })}>{(data.sections || []).map((s) => <option key={s.code} value={s.code}>{s.code} {s.title}</option>)}</select></label>
+        <fieldset><legend>裁剪范围（0–1，相对坐标）</legend><div className="crop-grid">{["x", "y", "width", "height"].map((k) => <label key={k}>{k}<input type="number" min="0" max="1" step="0.01" value={draft.crop?.[k] ?? (k === "width" || k === "height" ? 1 : 0)} onChange={(e) => setDraft({ ...draft, crop: { ...draft.crop, [k]: Number(e.target.value) } })} /></label>)}</div></fieldset>
+        <div className="drawing-actions"><button className="button secondary" onClick={() => save("rejected")}>拒绝使用</button><button className="button primary" disabled={!drawing?.source_pdf_path} onClick={() => save("confirmed")}><CheckCircle size={18} />确认图纸</button></div>
+      </section>
+    </div>
+  );
+}
+
+function Blueprint({ data, onCase, cases }) {
+  return <div className="workspace-view"><div className="view-heading"><div><h2>{data.blueprint?.title || "水利工程施工组织设计标准蓝图"}</h2><p>蓝图定义成品应该包含什么；历史案例只复用结构、表达和版式。</p></div><button className="button secondary" onClick={onCase}><UploadSimple size={18} />导入已通过案例</button></div>
+    {!!cases.length && <section className="panel case-strip"><strong>案例库</strong>{cases.slice(0, 5).map((c) => <span key={c.id}>{c.title}</span>)}</section>}
+    <div className="blueprint-grid">{(data.sections || []).map((s) => <article className="blueprint-section" key={s.code}><span>{s.code}</span><div><h3>{s.title}</h3><p>{s.purpose}</p><small>交付项：{s.components?.join("、")}</small></div></article>)}</div></div>;
+}
+
+function TaskSpec({ data, action, busy }) {
+  return <div className="workspace-view"><div className="view-heading"><div><h2>施组编制任务书</h2><p>确认目录、交付项、项目依据、编制依据和缺口后，才能进入正文生产。</p></div>
+    <button className="button primary" disabled={busy || !["awaiting_confirmation", "visual_analysis_failed"].includes(data.status)} onClick={() => action("confirm-task-spec")}><CheckCircle size={18} />确认任务书</button></div>
+    <section className="panel task-table"><table><thead><tr><th>章节</th><th>完成标准</th><th>项目依据</th><th>编制依据</th><th>缺失输入</th></tr></thead><tbody>{(data.sections || []).map((s) => <tr key={s.code}><td><strong>{s.code} {s.title}</strong><small>{s.purpose}</small></td><td>{s.acceptance?.join("；")}</td><td>{s.project_basis?.length ? s.project_basis.join("；") : "尚无"}</td><td>{s.reference_basis?.join("；")}</td><td className={s.missing_inputs?.length ? "warning-text" : ""}>{s.missing_inputs?.length ? s.missing_inputs.join("；") : "完整"}</td></tr>)}</tbody></table></section></div>;
+}
+
+function Chapters({ data, action, busy }) {
+  const firstOpen = data.sections?.find((s) => s.status !== "generated");
+  const [code, setCode] = useState(firstOpen?.code || data.sections?.[0]?.code);
+  const [instruction, setInstruction] = useState("");
+  const section = data.sections?.find((s) => s.code === code) || data.sections?.[0];
+  useEffect(() => { if (!data.sections?.some((s) => s.code === code)) setCode(firstOpen?.code || data.sections?.[0]?.code); }, [data.sections, code, firstOpen?.code]);
+  if (!section) return null;
+  const isNext = firstOpen?.code === section.code;
+  return <div className="chapter-view">
+    <section className="panel chapter-list">{data.sections.map((s) => <button key={s.code} className={s.code === section.code ? "active" : ""} onClick={() => setCode(s.code)}><span>{s.code}</span><div><strong>{s.title}</strong><small>{s.completion || 0}% · {STATUS[s.status]?.[0] || s.status}</small></div></button>)}</section>
+    <section className="panel chapter-detail"><div className="panel-heading"><div><h2>{section.code} {section.title}</h2><span>{section.purpose}</span></div><StatusPill value={section.status} /></div>
+      <h3>本章交付组件</h3><div className="component-list">{section.components?.map((x) => <div key={x}><CheckCircle size={17} /><span>{x}</span></div>)}</div>
+      <h3>正文预览</h3><div className="content-preview">{section.content || "尚未生成。本章只有在前一章确认后才能生成。"}</div>
+      {section.status === "awaiting_approval" && <div className="revision-box"><textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} placeholder="输入具体修改要求，例如：补充围堰拆除顺序，并引用已确认图纸。" /><div><button className="button secondary" disabled={busy || instruction.trim().length < 2} onClick={() => action("revise", { section_code: section.code, instruction })}>按要求重写</button><button className="button primary" disabled={busy} onClick={() => action("approve", { section_code: section.code })}><CheckCircle size={18} />接受本章</button></div></div>}
+      {!section.content && <button className="button primary wide" disabled={busy || !isNext || !["generating", "generation_failed"].includes(data.status)} onClick={() => action("generate", { section_code: section.code })}><PlayCircle size={18} />生成本章</button>}
+    </section>
+    <section className="panel basis-panel"><div className="panel-heading"><div><h2>章节依据</h2><span>生成时只发送此证据包</span></div></div><h3>项目依据</h3>{section.project_basis?.map((x) => <p key={x}>{x}</p>)}{!section.project_basis?.length && <p className="missing">尚无项目依据</p>}<h3>编制依据</h3>{section.reference_basis?.map((x) => <p key={x}>{x}</p>)}<h3>待确认输入</h3>{section.missing_inputs?.map((x) => <p className="missing" key={x}>{x}</p>)}</section>
+  </div>;
+}
+
+function ReviewModal({ item, index, onClose, onSaved, runId }) {
+  const [form, setForm] = useState({ status: "resolved", resolution: "", fact_key: "", value: "", unit: "" });
+  if (!item) return null;
+  const save = async (event) => {
+    event.preventDefault();
+    const state = await api(`/api/runs/${runId}/review-items/${index}`, { method: "PATCH", body: JSON.stringify(form) });
+    onSaved(state); onClose();
+  };
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal" onMouseDown={(e) => e.stopPropagation()}><header><div><h2>{item.title}</h2><p>{item.detail}</p></div><button className="icon-button" onClick={onClose}><X /></button></header><form onSubmit={save}>
+    <label>处理结论<textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} required /></label>
+    <div className="form-row"><label>状态<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="resolved">已解决</option><option value="dismissed">不适用/忽略</option><option value="open">仍待处理</option></select></label><label>事实名称（可选）<input value={form.fact_key} onChange={(e) => setForm({ ...form, fact_key: e.target.value })} /></label></div>
+    <div className="form-row"><label>人工确认值<input value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} /></label><label>单位<input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></label></div>
+    <footer><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary">保存复核结果</button></footer></form></section></div>;
+}
+
+function Review({ data, setData, action, busy }) {
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(null);
+  const items = (data.confirmations || []).map((item, index) => ({ item, index })).filter(({ item }) => !query || `${item.title}${item.detail}`.includes(query));
+  return <div className="workspace-view"><div className="view-heading"><div><h2>人工复核中心</h2><p>复核项可以录入结论和确认事实，不只是展示告警。</p></div><button className="button primary" disabled={busy || !(data.outputs?.docx_path || data.docx?.docx_path)} onClick={() => action("review-draft")}><ShieldCheck size={18} />运行成品复核</button></div>
+    <section className="panel"><div className="review-toolbar"><div className="search"><MagnifyingGlass size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索复核项" /></div><span>{items.length} 项</span></div>
+      {items.map(({ item, index }) => <div className={`finding ${item.severity || ""}`} key={`${item.title}-${index}`}><Warning size={20} /><div><strong>{item.title}</strong><p>{item.detail}</p><small>{item.category} · {item.affected_sections?.join("、")}</small></div><div className="finding-actions"><StatusPill value={item.status} /><button className="text-button compact-link" onClick={() => setSelected({ item, index })}>编辑处理</button></div></div>)}
+      {!items.length && <div className="empty-state"><CheckCircle size={28} /><p>没有匹配的复核项</p></div>}
+    </section>
+    <ReviewModal item={selected?.item} index={selected?.index} runId={data.run_id} onClose={() => setSelected(null)} onSaved={setData} />
+  </div>;
+}
+
+function Delivery({ data, action, busy }) {
+  const outputs = { docx_path: data.docx?.docx_path, pdf_path: data.pdf?.pdf_path, ...(data.outputs || {}) };
+  const reports = data.reports || {};
+  const entries = [
+    ["施工组织设计_初稿.docx", outputs.docx_path, FileDoc],
+    ["施工组织设计_初稿.pdf", outputs.pdf_path, FilePdf],
+    ...Object.entries(reports).filter(([, path]) => typeof path === "string").map(([name, path]) => [name, path, ListChecks]),
+  ];
+  return <div className="workspace-view"><div className="view-heading"><div><h2>交付中心</h2><p>全部章节确认后装配 Word，优先用 Word COM 导出 PDF。</p></div><div className="heading-actions"><button className="button primary" disabled={busy || data.status !== "ready_for_assembly"} onClick={() => action("assemble")}><FileDoc size={18} />装配 DOCX / PDF</button><button className="button secondary" disabled={busy || !data.run_id} onClick={() => action("export-reports")}><Archive size={18} />更新报告</button></div></div>
+    <div className="delivery-grid">{entries.filter(([, path]) => path).map(([name, path, Icon]) => <article className="delivery-card" key={`${name}-${path}`}><Icon size={30} /><div><strong>{name}</strong><span>{path}</span></div><a href={fileUrl(path)} target="_blank">打开</a></article>)}</div>
+    {!entries.some(([, p]) => p) && <div className="empty-page"><Archive size={42} /><h2>尚未生成交付文件</h2><p>请先完成任务书确认和全部章节审批。</p></div>}
+  </div>;
+}
+
+function nextView(data) {
+  if (!data.run_id) return "sources";
+  if (data.status === "awaiting_role_confirmation") return "sources";
+  if (["visual_analysis_pending", "analyzing_visuals"].includes(data.status)) return "sources";
+  if (["awaiting_confirmation", "visual_analysis_failed"].includes(data.status)) return "task";
+  if (["generating", "generation_failed"].includes(data.status)) return "chapters";
+  if (data.status === "ready_for_assembly") return "delivery";
+  if (["draft_generated", "reviewed"].includes(data.status)) return "delivery";
+  return "overview";
+}
+
+export default function App() {
+  const [data, setData] = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [cases, setCases] = useState([]);
+  const [active, setActive] = useState("overview");
+  const [modal, setModal] = useState("");
+  const [trackedJob, setTrackedJob] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const notify = (message, error = false) => { setToast({ message, error }); setTimeout(() => setToast(null), 4500); };
+  const refreshLists = () => Promise.all([api("/api/projects").then(setProjects), api("/api/cases").then(setCases).catch(() => setCases([]))]);
+  const refresh = async (runId = data?.run_id) => {
+    const state = await api(`/api/dashboard${runId ? `?run_id=${runId}` : ""}`);
+    setData(state); refreshLists();
+  };
+  useEffect(() => { refresh().catch((e) => notify(e.message, true)); }, []);
   useEffect(() => {
-    if (!["generating", "analyzing_visuals"].includes(data?.status) || !data.run_id) return undefined;
+    if (!trackedJob) return undefined;
     const timer = setInterval(async () => {
       try {
-        const next = await api(`/api/dashboard?run_id=${data.run_id}`);
-        setData(next);
-        if (["draft_generated", "partial_draft"].includes(next.status)) {
-          setActive("delivery");
-          setToast(next.status === "draft_generated" ? "施工组织设计初稿已生成" : "初稿已生成，部分章节需要人工补充");
+        const result = await api(`/api/jobs/${trackedJob}`);
+        if (result.state) setData(result.state);
+        if (["succeeded", "failed"].includes(result.job.status)) {
+          clearInterval(timer); setTrackedJob(null); refreshLists();
+          if (result.job.status === "failed") notify(result.job.error_text || "任务失败", true);
+          else notify("后台任务已完成");
         }
-        if (next.status === "generation_failed") setToast(next.generation?.error || "章节生成失败");
-        if (next.status === "awaiting_confirmation" && data.status === "analyzing_visuals") {
-          setActive("task");
-          setToast("多模态资料分析已完成，请复核并确认编制任务书");
-        }
-        if (next.status === "visual_analysis_failed") setToast(next.visual_analysis?.error || "视觉资料分析失败");
-      } catch (error) {
-        setToast(error.message);
-      }
-    }, 2200);
+      } catch (e) { clearInterval(timer); setTrackedJob(null); notify(e.message, true); }
+    }, 1200);
     return () => clearInterval(timer);
-  }, [data?.status, data?.run_id]);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(""), 4200);
-    return () => clearTimeout(timer);
-  }, [toast]);
+  }, [trackedJob]);
 
-  const runAction = async (kind) => {
-    if (!data?.run_id) {
-      setImportOpen(true);
-      return;
-    }
-    setBusy(true);
+  const busy = !!trackedJob || ["queued", "running"].includes(data?.workflow?.status);
+  const runAction = async (name, payload = {}, suppliedJob = null) => {
     try {
-      if (kind === "continue") {
-        if (data.status === "awaiting_role_confirmation") setActive("sources");
-        else if (data.status === "awaiting_confirmation") setActive("task");
-        else if (data.status === "ready_for_generation") setActive("chapters");
-        else setActive("delivery");
-      } else if (kind === "reports") {
-        const reports = await api(`/api/runs/${data.run_id}/export-reports`, { method: "POST" });
-        setData({ ...data, reports });
-        setToast("六份生产控制报告已更新");
+      if (suppliedJob) return setTrackedJob(suppliedJob.id);
+      const runId = data.run_id;
+      if (name === "approve") {
+        const state = await api(`/api/runs/${runId}/chapters/${payload.section_code}/approve`, { method: "POST" });
+        setData(state); return notify("本章已确认");
       }
-    } catch (error) {
-      setToast(error.message);
-    } finally {
-      setBusy(false);
-    }
+      const routes = {
+        "confirm-file-roles": [`/api/runs/${runId}/confirm-file-roles`, {}],
+        "analyze-visuals": [`/api/runs/${runId}/analyze-visuals`, {}],
+        "confirm-task-spec": [`/api/runs/${runId}/confirm-task-spec`, { confirmed: true }],
+        generate: [`/api/runs/${runId}/chapters/${payload.section_code}/generate`, {}],
+        revise: [`/api/runs/${runId}/chapters/${payload.section_code}/revise`, { instruction: payload.instruction }],
+        assemble: [`/api/runs/${runId}/assemble`, {}],
+        "review-draft": [`/api/runs/${runId}/review-draft`, {}],
+        "export-reports": [`/api/runs/${runId}/export-reports`, {}],
+      };
+      const [path, body] = routes[name];
+      const result = await api(path, { method: "POST", body: JSON.stringify(body) });
+      setData(result);
+      const job = result.workflow_jobs?.find((j) => ["queued", "running"].includes(j.status));
+      if (job) setTrackedJob(job.id);
+    } catch (e) { notify(e.message, true); }
   };
 
-  const confirm = async () => {
-    setBusy(true);
-    try {
-      const next = await api(`/api/runs/${data.run_id}/confirm-task-spec`, {
-        method: "POST",
-        body: JSON.stringify({ confirmed: true }),
-      });
-      setData(next);
-      setActive("chapters");
-      setToast("编制任务书已确认，章节生成已解锁");
-    } catch (error) {
-      setToast(error.message);
-    } finally { setBusy(false); }
+  const onSubmitted = (result) => {
+    if (result.job) setTrackedJob(result.job.id);
+    notify("资料已复制，开始受控分析");
   };
+  if (!data) return <div className="loading-screen"><ArrowClockwise className="spin" />正在启动生产台…</div>;
 
-  const confirmRoles = async () => {
-    setBusy(true);
-    try {
-      const next = await api(`/api/runs/${data.run_id}/confirm-file-roles`, { method: "POST" });
-      setData(next);
-      if (next.status === "visual_analysis_pending") {
-        setActive("sources");
-        setToast("文件角色已确认，请运行多模态资料分析");
-      } else {
-        setActive("task");
-        setToast("文件角色已确认，编制任务书已解锁");
-      }
-    } catch (error) {
-      setToast(error.message);
-    } finally { setBusy(false); }
-  };
-
-  const analyzeVisuals = async () => {
-    setBusy(true);
-    try {
-      const next = await api(`/api/runs/${data.run_id}/analyze-visuals`, { method: "POST" });
-      setData(next);
-      setToast("千问正在后台结构化扫描件、表格和图纸；争议项按需交给智谱复核");
-    } catch (error) {
-      setToast(error.message);
-    } finally { setBusy(false); }
-  };
-
-  const resolveConfirmation = async (index) => {
-    try {
-      const next = await api(`/api/runs/${data.run_id}/confirmations/${index}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "resolved", resolution: "人工已核对" }),
-      });
-      setData(next);
-      setToast("待确认事项已标记为处理完成");
-    } catch (error) {
-      setToast(error.message);
-    }
-  };
-
-  const resolveDifference = async (index) => {
-    try {
-      const next = await api(`/api/runs/${data.run_id}/model-differences/${index}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "resolved", resolution: "已对照来源页面人工确认" }),
-      });
-      setData(next);
-      setToast("模型差异已记录人工处理结果");
-    } catch (error) {
-      setToast(error.message);
-    }
-  };
-
-  const generate = async () => {
-    setBusy(true);
-    setToast("DeepSeek 已进入后台并行生成，可以切换页面");
-    try {
-      const next = await api(`/api/runs/${data.run_id}/generate-docx`, { method: "POST" });
-      setData(next);
-    } catch (error) {
-      setToast(error.message);
-    } finally { setBusy(false); }
-  };
-
-  const reviewDraft = async () => {
-    setBusy(true);
-    setToast("正在重新执行要求覆盖、文档结构、DeepSeek文字和视觉复核");
-    try {
-      const next = await api(`/api/runs/${data.run_id}/review-draft`, { method: "POST" });
-      setData(next);
-      setToast("四项复核已更新");
-    } catch (error) {
-      setToast(error.message);
-    } finally { setBusy(false); }
-  };
-
-  const page = useMemo(() => {
-    if (!data) return null;
-    if (active === "sources") return <SourcesView data={data} onData={setData} onToast={setToast} onConfirmRoles={confirmRoles} onAnalyzeVisuals={analyzeVisuals} />;
-    if (active === "blueprint") return <BlueprintView data={data} onToast={setToast} />;
-    if (active === "task") return <TaskView data={data} onConfirm={confirm} />;
-    if (active === "chapters") return <ChapterView data={data} selected={selected} onSelect={setSelected} onGenerate={generate} />;
-    if (active === "review") return <ReviewView data={data} onResolve={resolveConfirmation} onResolveDifference={resolveDifference} />;
-    if (active === "delivery") return <DeliveryView data={data} onReports={() => runAction("reports")} onReview={reviewDraft} />;
-    return <Overview data={data} setActive={setActive} onSelectSection={(item) => { setSelected(item); setActive("chapters"); }} onAction={runAction} />;
-  }, [active, data, selected]);
-
-  if (!data) return <div className="loading-screen"><ArrowClockwise className="spin" size={30} />正在载入生产工作台…</div>;
+  let view;
+  if (active === "overview") view = <Overview data={data} onNavigate={setActive} action={runAction} />;
+  if (active === "sources") view = <Sources data={data} setData={setData} action={runAction} busy={busy} notify={notify} />;
+  if (active === "drawings") view = <Drawings data={data} setData={setData} notify={notify} />;
+  if (active === "blueprint") view = <Blueprint data={data} onCase={() => setModal("case")} cases={cases} />;
+  if (active === "task") view = <TaskSpec data={data} action={runAction} busy={busy} />;
+  if (active === "chapters") view = <Chapters data={data} action={runAction} busy={busy} />;
+  if (active === "review") view = <Review data={data} setData={setData} action={runAction} busy={busy} />;
+  if (active === "delivery") view = <Delivery data={data} action={runAction} busy={busy} />;
 
   return (
     <div className="app-shell">
       <Sidebar active={active} onChange={setActive} data={data} />
       <main className="app-main">
-        <Header data={data} onImport={() => setImportOpen(true)} onRefresh={refresh} />
-        <div className="content">{page}</div>
+        <Header data={data} projects={projects} onImport={() => setModal("project")} onConfig={() => setModal("config")} onRefresh={() => refresh()} onSelect={(id) => id && refresh(id)} />
+        <div className="content"><WorkflowBar data={data} /><StageRail current={data.stage_index || 1} />{view}</div>
       </main>
-      <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onPrepared={(next) => { setData(next); setActive("sources"); setToast("资料已分类，请先核对并确认文件角色"); }} />
-      {toast && <div className="toast">{busy && <ArrowClockwise className="spin" size={18} />}{toast}</div>}
+      <ImportModal open={modal === "project"} kind="project" onClose={() => setModal("")} onSubmitted={onSubmitted} />
+      <ImportModal open={modal === "case"} kind="case" onClose={() => setModal("")} onSubmitted={onSubmitted} />
+      <ConfigModal open={modal === "config"} onClose={() => setModal("")} onSaved={() => refresh()} />
+      {toast && <div className={`toast ${toast.error ? "error" : ""}`}>{toast.error ? <Warning size={18} /> : <CheckCircle size={18} />}{toast.message}</div>}
     </div>
   );
 }

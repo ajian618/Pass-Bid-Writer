@@ -56,6 +56,7 @@ def render_document_pages(
     *,
     settings: Settings,
     max_pages: int = 4,
+    scale: float = 1.5,
 ) -> dict[str, Any]:
     source_path = source_path.expanduser().resolve()
     render_root = settings.render_dir / _safe_stem(source_path)
@@ -102,7 +103,7 @@ def render_document_pages(
         pages: list[dict[str, Any]] = []
         for page_index in page_indexes:
             page = doc.load_page(page_index)
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
             image_path = render_root / f"page-{page_index + 1:03d}.png"
             pix.save(str(image_path))
             pages.append(

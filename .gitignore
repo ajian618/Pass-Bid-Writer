@@ -24,6 +24,7 @@ temp/
 workbench/node_modules/
 workbench/dist/
 workbench/.npm-cache/
+release/
 
 *.db
 *.sqlite

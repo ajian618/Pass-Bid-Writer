@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import get_settings
+from .drawings import merge_visual_drawings
 from .model_router import ModelRouter
 from .vision import render_document_pages
 
@@ -14,7 +15,11 @@ VISUAL_ROLES = {"tender", "design_report", "budget", "drawing", "standard"}
 DIRECT_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
-def build_visual_jobs(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_visual_jobs(
+    files: list[dict[str, Any]],
+    *,
+    project_root: Path | None = None,
+) -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
     for file_info in files:
         if file_info.get("is_duplicate"):
@@ -22,7 +27,7 @@ def build_visual_jobs(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
         suffix = str(file_info.get("suffix", "")).lower()
         if file_info.get("role") not in VISUAL_ROLES:
             continue
-        if suffix not in DIRECT_IMAGE_SUFFIXES | {".pdf", ".doc", ".docx", ".dxf", ".dwg"}:
+        if suffix not in DIRECT_IMAGE_SUFFIXES | {".pdf", ".doc", ".docx", ".dxf"}:
             continue
         jobs.append(
             {
@@ -30,6 +35,7 @@ def build_visual_jobs(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "source_path": file_info["path"],
                 "source_name": file_info["name"],
                 "source_role": file_info["role"],
+                "project_root": str(project_root or ""),
                 "suffix": suffix,
                 "status": "pending",
                 "provider": "",
@@ -121,17 +127,41 @@ def analyze_visual_sources(run_id: int) -> dict[str, Any]:
             role = "vision_primary" if complex_role else "vision_batch"
             if not statuses[role]["configured"]:
                 role = "vision_primary" if primary_ready else "vision_batch"
-            result = router.complete_json(
-                role=role,
-                system=(
-                    "你是水利工程投标资料视觉结构化模型。只提取图像中明确可见的内容，"
-                    "不得推断缺失数字。所有事实必须保留页码或图号、可见原文和置信度。"
-                ),
-                prompt=_visual_prompt(job),
-                images=images[:8],
-                timeout=240,
-                max_tokens=2600,
-            )
+            result: dict[str, Any] = {
+                "document_summary": "",
+                "facts": [],
+                "tables": [],
+                "drawings": [],
+                "conflicts": [],
+                "needs_human_review": [],
+            }
+            page_batches = [
+                images[index : index + 8] for index in range(0, len(images), 8)
+            ]
+            for batch_index, image_batch in enumerate(page_batches):
+                page_offset = batch_index * 8
+                batch_result = router.complete_json(
+                    role=role,
+                    system=(
+                        "你是水利工程投标资料视觉结构化模型。只提取图像中明确可见的内容，"
+                        "不得推断缺失数字。所有事实必须保留页码或图号、可见原文和置信度。"
+                    ),
+                    prompt=_visual_prompt(
+                        job,
+                        page_numbers=[
+                            _image_page_number(path, fallback=page_offset + index + 1)
+                            for index, path in enumerate(image_batch)
+                        ],
+                    ),
+                    images=image_batch,
+                    timeout=240,
+                    max_tokens=2600,
+                )
+                _merge_visual_batch_result(
+                    result,
+                    batch_result,
+                    page_offset=0,
+                )
             job["provider"] = statuses[role]["provider"]
             job["model"] = statuses[role]["model"]
             job["result"] = result
@@ -185,7 +215,7 @@ def _job_images(job: dict[str, Any]) -> list[Path]:
         if suffix in {".tif", ".tiff"}:
             from PIL import Image
 
-            output_dir = path.parent / ".production" / "previews"
+            output_dir = _preview_dir(job)
             output_dir.mkdir(parents=True, exist_ok=True)
             output = output_dir / f"{path.stem}.png"
             with Image.open(path) as image:
@@ -193,18 +223,26 @@ def _job_images(job: dict[str, Any]) -> list[Path]:
             return [output]
         return [path]
     if suffix in {".pdf", ".doc", ".docx"}:
-        render = render_document_pages(path, settings=get_settings(), max_pages=8)
+        is_drawing = job.get("source_role") == "drawing"
+        max_pages = 32 if is_drawing else 12
+        render = render_document_pages(
+            path,
+            settings=get_settings(),
+            max_pages=max_pages,
+            scale=3.0 if is_drawing else 1.5,
+        )
         if render.get("status") != "ready":
             raise RuntimeError(render.get("message", "文件页面渲染失败"))
-        return [Path(item["image_path"]) for item in render.get("pages", [])]
+        images = [Path(item["image_path"]) for item in render.get("pages", [])]
+        return _drawing_tiles(images) if is_drawing else images
     if suffix == ".dxf":
-        return [_render_dxf_preview(path)]
+        return [_render_dxf_preview(path, _preview_dir(job))]
     if suffix == ".dwg":
         raise RuntimeError("DWG需要设计处另存为PDF/DXF或提供预览图后再分析")
     return []
 
 
-def _render_dxf_preview(source: Path) -> Path:
+def _render_dxf_preview(source: Path, output_dir: Path | None = None) -> Path:
     try:
         import ezdxf  # type: ignore
         import matplotlib
@@ -215,7 +253,7 @@ def _render_dxf_preview(source: Path) -> Path:
         from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
     except Exception as exc:
         raise RuntimeError(f"DXF预览依赖未安装：{exc}") from exc
-    output_dir = source.parent / ".production" / "previews"
+    output_dir = output_dir or source.parent / "drawings" / "previews"
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"{source.stem}.png"
     document = ezdxf.readfile(source)
@@ -230,12 +268,28 @@ def _render_dxf_preview(source: Path) -> Path:
     return output
 
 
-def _visual_prompt(job: dict[str, Any]) -> str:
+def _preview_dir(job: dict[str, Any]) -> Path:
+    project_root = Path(str(job.get("project_root", "")))
+    if str(project_root) and project_root.exists():
+        return project_root / "drawings" / "previews"
+    return Path(job["source_path"]).parent / "drawings" / "previews"
+
+
+def _visual_prompt(
+    job: dict[str, Any],
+    *,
+    page_numbers: list[int] | None = None,
+) -> str:
+    page_numbers = page_numbers or []
     return json.dumps(
         {
             "任务": "将视觉资料转换成可追溯项目证据",
             "资料角色": job["source_role"],
             "文件名": job["source_name"],
+            "本批页面映射": [
+                {"输入图像": index, "原文件页码": page}
+                for index, page in enumerate(page_numbers, start=1)
+            ],
             "页面分类结果": job.get("classification", {}),
             "输出字段": {
                 "document_summary": "不超过300字",
@@ -260,6 +314,61 @@ def _visual_prompt(job: dict[str, Any]) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _merge_visual_batch_result(
+    aggregate: dict[str, Any],
+    batch: dict[str, Any],
+    *,
+    page_offset: int,
+) -> None:
+    summary = str(batch.get("document_summary", "")).strip()
+    if summary:
+        aggregate["document_summary"] = "；".join(
+            value
+            for value in (aggregate.get("document_summary", ""), summary)
+            if value
+        )[:1200]
+    for key in ("facts", "tables", "drawings", "conflicts", "needs_human_review"):
+        values = batch.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if isinstance(item, dict) and "page" in item:
+                page = _safe_int(item.get("page"))
+                if page is not None and page <= 8 and page_offset:
+                    item = {**item, "page": page + page_offset}
+            aggregate.setdefault(key, []).append(item)
+
+
+def _drawing_tiles(images: list[Path]) -> list[Path]:
+    """Keep the full sheet and add four high-resolution quadrants for dense drawings."""
+    from PIL import Image
+
+    tiled: list[Path] = []
+    for source in images:
+        tiled.append(source)
+        tile_dir = source.parent / "tiles"
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as image:
+            width, height = image.size
+            boxes = (
+                (0, 0, width // 2, height // 2),
+                (width // 2, 0, width, height // 2),
+                (0, height // 2, width // 2, height),
+                (width // 2, height // 2, width, height),
+            )
+            for index, box in enumerate(boxes, start=1):
+                output = tile_dir / f"{source.stem}-tile-{index}.png"
+                if not output.exists():
+                    image.crop(box).save(output)
+                tiled.append(output)
+    return tiled
+
+
+def _image_page_number(path: Path, *, fallback: int) -> int:
+    match = re.search(r"page-(\d+)", path.name)
+    return int(match.group(1)) if match else fallback
 
 
 def _merge_visual_facts(
@@ -359,6 +468,7 @@ def _review_visual_job_if_configured(
 def _finish_visual_analysis(run_id: int, state: dict[str, Any]) -> dict[str, Any]:
     from .production import _fact_section_keywords, _input_is_available, _save_run_state
 
+    merge_visual_drawings(state)
     for section in state.get("sections", []):
         for fact in state.get("facts", []):
             if not fact.get("extraction_model"):

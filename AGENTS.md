@@ -1,115 +1,47 @@
-# Hermes Pass Bid Writing Workspace Rules
+# Python 多模型施工组织设计生成台
 
-This workspace is for drafting pass/fail technical bids. Do not use the
-`bid-review` MCP for the core writing workflow.
+本仓库是 Windows 单机单用户的施工组织设计生产系统。核心链路是：
 
-## Role
+`React 工作台 -> FastAPI 受控工作流 -> DeepSeek / 千问 / 智谱 -> 证据库与案例库 -> DOCX / PDF / 控制报告`
 
-Hermes is the bid-writing dispatcher for Zhejiang water-conservancy and
-water-construction pass/fail technical bids. The target output is a reviewable
-DOCX draft first, with PDF export only after human edits.
+## 不可回退的架构边界
 
-## Intent Routing
+- 不接入 Hermes、飞书、MCP 或通用智能体循环。
+- 工作台是唯一主交互入口；每个模型动作由明确的工作流步骤触发。
+- DeepSeek 负责文字，千问负责视觉结构化，智谱只复核低置信或冲突视觉结果。
+- 本地解析器优先；模型只接收检索后的证据包。
+- 模型记忆不得作为项目数字、规范条文或图纸结论的唯一依据。
+- V1 保存 DWG 但不解析或修改 DWG；只有用户导出的图纸 PDF 可以进入视觉识别。
 
-Choose the `pass-bid-writing` tools automatically from the user's intent. Do
-not require the user to name MCP tools when their request is clear.
+## 受控生产闸门
 
-- If the user provides one tender file and one accepted technical bid file,
-  treat it as an accepted case pair. Call `writing_ingest_case_pair`, then
-  summarize the learned writing patterns and where they were stored.
-- If the user points to `projects/passed_cases/<project>` or `projects/passed/<project>`,
-  treat it as an accepted project folder. Call `writing_ingest_passed_case`
-  with visual analysis enabled.
-- If the user points to `projects/new_tenders/<project>` or `projects/unpassed/<project>`,
-  treat it as a new tender folder. For the evidence/reference production flow,
-  call `writing_prepare_production_system`, then
-  `writing_confirm_production_file_roles`. If visual jobs exist, call
-  `writing_analyze_production_visual_sources`. Resolve project-data conflicts
-  and model differences, ask the user to confirm the task specification, then
-  call `writing_confirm_production_task_spec` and
-  `writing_generate_production_docx`. Write outputs to that project's
-  `outputs` folder.
-- If the user provides only a tender file and asks to write, draft, produce, or
-  prepare a pass/fail technical bid, call `writing_extract_tender_requirements`,
-  `writing_build_response_matrix`, `writing_search_case_patterns`,
-  `writing_generate_outline`, then generate section text and call
-  `writing_generate_docx`.
-- If the user asks to draft from a project folder, do not jump straight to
-  `writing_generate_docx`. First call `writing_prepare_new_tender`, then
-  `writing_search_case_patterns`, then use the returned case snippets and any
-  returned `layout_profile_id` when drafting sections and generating DOCX.
-- If the user asks to learn layout, page style, cover, catalog, headers,
-  footers, page numbers, or final PDF appearance, call
-  `writing_extract_layout_profile` or `writing_visual_check_document`.
-- If the user asks whether a draft covers the tender requirements, call
-  `writing_check_draft_compliance`.
-- If the user asks for a PDF or final export, call `writing_export_pdf` after a
-  DOCX exists.
-- If the user asks what has been learned or wants similar wording, call
-  `writing_search_case_patterns`.
-- Ask a short clarification only when the role of a file is ambiguous, for
-  example two DOCX files with no hint which is tender and which is accepted bid.
+1. 导入整个本地项目文件夹。
+2. 自动解压、分类、去重和本地解析。
+3. 人工确认文件角色。
+4. 运行千问视觉分析，处理图纸缺 PDF、低置信数字和模型差异。
+5. 编辑人工复核项，补录确认事实。
+6. 确认《施组编制任务书》。
+7. 严格按顺序逐章生成；每章必须人工接受后才能进入下一章。
+8. 全部章节确认后装配 DOCX，并用 Word COM 优先导出 PDF。
+9. 运行要求覆盖、数字依据、图纸来源、章节一致性和视觉检查。
+10. 输出 DOCX、PDF、六份控制报告和 assets。
 
-## Required Flow
+不得绕过任务书确认、章节确认或证据阻断。
 
-For the production-system route, the controlled gate is:
+## 数据和部署
 
-1. `writing_prepare_production_system`
-2. Human correction and `writing_confirm_production_file_roles`
-3. `writing_analyze_production_visual_sources` when visual jobs exist; Qwen is
-   primary and GLM is only used for flagged conflicts or low confidence
-4. Upload cited standard originals and resolve project-data/model conflicts
-5. Human confirmation of section deliverables, basis links and missing inputs
-6. `writing_confirm_production_task_spec`
-7. `writing_generate_production_docx`
-8. `writing_get_production_status` until generation, compliance, text review,
-   visual review and document assembly finish
-9. `writing_export_production_reports`
+- 运行数据统一位于 `%LOCALAPPDATA%\PassBidWriter\`。
+- 独立 Python 环境位于 `%LOCALAPPDATA%\PassBidWriter\venv`。
+- `setup.ps1` 只负责首次安装；`start.ps1` 日常启动不得下载依赖。
+- 发布包必须包含 `workbench/dist`，运行时不得要求 Node.js。
+- 项目源资料复制到 `projects/<project_id>/sources`，原文件不修改。
+- 不迁移旧数据库、旧学习数据、旧成果或旧日志。
 
-Never bypass file-role or task-spec confirmation. An open high-severity data
-conflict or model difference blocks task-spec confirmation. Never use model
-memory as the sole basis for a project fact, quantity, date, standard clause
-or normative conclusion.
+## 实现和验证
 
-1. Learn accepted case pairs before drafting when examples are available.
-2. Extract tender requirements before writing正文.
-3. Build a response matrix before generating the outline.
-4. Search accepted patterns before generating final section text. If no
-   relevant case is found, explicitly say that drafting is using the standard
-   pass/fail water-conservancy skeleton.
-5. Generate DOCX draft sections from the matrix and relevant accepted patterns.
-6. When PDF/DOCX sources are available, extract a visual layout profile before
-   applying accepted-case formatting to the draft.
-7. Run compliance checking and visual PDF checking before calling a draft usable.
-8. Save durable lessons only when they are reusable across projects.
-
-## Boundaries
-
-- Do not promise a guaranteed pass.
-- Do not invent project-specific dates, quantities, personnel, machinery, or
-  construction constraints when the tender file does not provide them.
-- Keep writing experience separate from review/scoring experience.
-- Prefer Word/DOCX as the working artifact; PDF is the final export artifact.
-- Keep DeepSeek/Hermes as the writing brain. Use the configured vision provider
-  only through `pass-bid-writing` tools for screenshot/layout analysis.
-- `writing_generate_docx` is the document assembler. It should render cover,
-  TOC, headers, footers, page numbers, Word tables from Markdown tables, and
-  then update Word fields when Word COM is available. Do not use ad-hoc
-  after-the-fact scripts for ordinary formatting.
-- When `writing_search_case_patterns` returns a case with `layout_profile_id`,
-  pass that ID into `writing_generate_docx` unless the tender has a stronger
-  project-specific layout profile.
-
-## Writing Priorities
-
-- Cover every mandatory tender response item.
-- Keep章节结构 close to accepted pass/fail technical bids.
-- Use concrete water-conservancy scene language: cofferdam, diversion,
-  dewatering, flood-season work, pump station, sluice gate, river improvement,
-  reservoir constraints, quality, safety, environment, and schedule.
-- Mark uncertain or missing project-specific information as human-confirmation
-  items instead of fabricating it.
-- Default local data layout is `projects/passed_cases/<project>` for accepted
-  cases and `projects/new_tenders/<project>` for tenders to draft. The aliases
-  `projects/passed` and `projects/unpassed` are accepted, but the clearer names
-  should be preferred in new documentation.
+- 所有运行状态写入 SQLite；章节失败可单独重试，重启后状态不丢失。
+- 图纸确认记录必须包含 DWG、PDF、页码、裁剪坐标、图号、章节、插入方式和确认时间。
+- 每项人工复核必须可编辑、可关闭，并可补录为人工确认事实。
+- DOCX 是可编辑主成果；PDF 是检查和交付成果。
+- 修改核心链路后至少运行 `py -3.12 -m pytest -q`、`npm run build` 和浏览器主流程检查。
+- 不承诺投标必过，不虚构缺失信息。

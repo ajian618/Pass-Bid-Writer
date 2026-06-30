@@ -62,13 +62,14 @@ def scan_single_project(project_dir: Path, *, project_kind: str = "") -> dict[st
 def expand_project_archives(project_dir: Path) -> dict[str, Any]:
     """Safely expand ZIP inputs into a deterministic project-local cache."""
     project_dir = project_dir.expanduser().resolve()
-    extraction_root = project_dir / ".production" / "extracted"
+    extraction_root = project_dir / "extracted"
     extracted: list[str] = []
     skipped: list[dict[str, str]] = []
     for archive in project_dir.rglob("*"):
         if not archive.is_file() or archive.suffix.lower() not in ARCHIVE_SUFFIXES:
             continue
-        if ".production" in archive.parts or "outputs" in archive.parts:
+        relative_parts = archive.relative_to(project_dir).parts
+        if "extracted" in relative_parts or "outputs" in relative_parts:
             continue
         target = extraction_root / archive.stem
         target.mkdir(parents=True, exist_ok=True)
@@ -172,7 +173,7 @@ def _infer_project_kind(project_dir: Path) -> str:
 
 
 def _iter_document_files(project_dir: Path) -> list[Path]:
-    ignored_dirs = {"outputs", "__pycache__", ".git", ".cache"}
+    ignored_dirs = {"outputs", "drawings", "assets", "__pycache__", ".git", ".cache"}
     files: list[Path] = []
     for path in project_dir.rglob("*"):
         if any(part in ignored_dirs for part in path.parts):

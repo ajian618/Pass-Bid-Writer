@@ -84,7 +84,7 @@ def init_db(database_path: Path) -> None:
                 lesson TEXT NOT NULL,
                 scope TEXT NOT NULL DEFAULT 'pass_bid_writing',
                 tags TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT 'hermes',
+                source TEXT NOT NULL DEFAULT 'system',
                 case_id INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(case_id) REFERENCES case_pairs(id)
@@ -304,6 +304,43 @@ def init_db(database_path: Path) -> None:
                 FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS drawing_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                source_dwg_path TEXT NOT NULL DEFAULT '',
+                source_pdf_path TEXT NOT NULL DEFAULT '',
+                source_page INTEGER,
+                drawing_no TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                caption TEXT NOT NULL DEFAULT '',
+                crop_json TEXT NOT NULL DEFAULT '{}',
+                applicable_sections_json TEXT NOT NULL DEFAULT '[]',
+                placement TEXT NOT NULL DEFAULT 'inline',
+                preview_path TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmed_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                message TEXT NOT NULL DEFAULT '',
+                error_text TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT '',
+                finished_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_case_pairs_title ON case_pairs(title);
             CREATE INDEX IF NOT EXISTS idx_case_pairs_type ON case_pairs(project_type);
             CREATE INDEX IF NOT EXISTS idx_lessons_scope ON writing_lessons(scope);
@@ -319,6 +356,9 @@ def init_db(database_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_project_facts_run ON project_facts(production_run_id);
             CREATE INDEX IF NOT EXISTS idx_section_tasks_run ON section_tasks(production_run_id);
             CREATE INDEX IF NOT EXISTS idx_confirmation_items_run ON confirmation_items(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_drawing_assets_run ON drawing_assets(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_jobs_run ON workflow_jobs(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_jobs_status ON workflow_jobs(status);
             """
         )
         _add_column_if_missing(conn, "case_pairs", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
@@ -328,6 +368,107 @@ def init_db(database_path: Path) -> None:
         _add_column_if_missing(conn, "drafts", "visual_report_json", "visual_report_json TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(conn, "section_tasks", "content_text", "content_text TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "section_tasks", "model", "model TEXT NOT NULL DEFAULT ''")
+
+
+def create_workflow_job(
+    conn: sqlite3.Connection,
+    *,
+    action: str,
+    production_run_id: int | None = None,
+    message: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO workflow_jobs (
+            production_run_id, action, status, message,
+            metadata_json, result_json, created_at, updated_at
+        )
+        VALUES (?, ?, 'queued', ?, ?, '{}', ?, ?)
+        """,
+        (
+            production_run_id,
+            action,
+            message,
+            _json_dump(metadata or {}),
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def get_workflow_job(conn: sqlite3.Connection, job_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM workflow_jobs WHERE id = ?", (int(job_id),)).fetchone()
+    return row_to_dict(row)
+
+
+def update_workflow_job(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    status: str,
+    production_run_id: int | None = None,
+    message: str | None = None,
+    error_text: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    current = get_workflow_job(conn, job_id)
+    if current is None:
+        raise ValueError(f"workflow job not found: {job_id}")
+    now = utc_now()
+    started_at = current.get("started_at", "")
+    finished_at = current.get("finished_at", "")
+    if status == "running" and not started_at:
+        started_at = now
+    if status in {"succeeded", "failed"}:
+        finished_at = now
+    conn.execute(
+        """
+        UPDATE workflow_jobs
+        SET production_run_id = ?, status = ?, message = ?,
+            error_text = ?, metadata_json = ?, result_json = ?,
+            started_at = ?, finished_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            production_run_id if production_run_id is not None else current.get("production_run_id"),
+            status,
+            message if message is not None else current.get("message", ""),
+            error_text if error_text is not None else current.get("error_text", ""),
+            _json_dump(metadata if metadata is not None else current.get("metadata", {})),
+            _json_dump(result if result is not None else current.get("result", {})),
+            started_at,
+            finished_at,
+            now,
+            int(job_id),
+        ),
+    )
+
+
+def list_workflow_jobs(
+    conn: sqlite3.Connection,
+    *,
+    production_run_id: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if production_run_id is None:
+        rows = conn.execute(
+            "SELECT * FROM workflow_jobs ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM workflow_jobs
+            WHERE production_run_id = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (int(production_run_id), int(limit)),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows if row is not None]
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

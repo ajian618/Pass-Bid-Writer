@@ -1,4 +1,4 @@
-"""Standalone MCP tools for Hermes-centered pass/fail technical bid writing."""
+"""Independent multi-model production system for pass/fail technical bids."""
 
 __all__ = ["__version__"]
 

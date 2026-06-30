@@ -32,17 +32,17 @@ class ProductionSystemTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
-        self.storage = self.root / "storage"
+        self.storage = self.root / "database"
         self.project = self.root / "projects" / "new_tenders" / "河道治理测试项目"
         self.project.mkdir(parents=True)
-        self.previous_storage = os.environ.get("PASS_BID_WRITING_STORAGE_DIR")
-        os.environ["PASS_BID_WRITING_STORAGE_DIR"] = str(self.storage)
+        self.previous_storage = os.environ.get("PASS_BID_DATA_DIR")
+        os.environ["PASS_BID_DATA_DIR"] = str(self.root)
 
     def tearDown(self) -> None:
         if self.previous_storage is None:
-            os.environ.pop("PASS_BID_WRITING_STORAGE_DIR", None)
+            os.environ.pop("PASS_BID_DATA_DIR", None)
         else:
-            os.environ["PASS_BID_WRITING_STORAGE_DIR"] = self.previous_storage
+            os.environ["PASS_BID_DATA_DIR"] = self.previous_storage
         self.tempdir.cleanup()
 
     def test_reference_and_evidence_production_flow(self) -> None:

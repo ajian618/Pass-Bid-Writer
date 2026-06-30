@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -127,6 +128,9 @@ def apply_layout_profile(
     style_config: dict[str, Any],
 ) -> None:
     section = document.sections[0]
+    # Chinese water-conservancy tender documents conventionally use A4.
+    section.page_width = Inches(8.27)
+    section.page_height = Inches(11.69)
     section.top_margin = Inches(1.0)
     section.bottom_margin = Inches(1.0)
     section.left_margin = Inches(1.15)
@@ -559,7 +563,7 @@ def normalize_sections(
                     for row in rows
                 )
             else:
-                body = "【待完善】请 Hermes 根据响应矩阵和历史通过案例补写本章内容。"
+                body = "【待完善】请根据响应矩阵和历史通过案例补写本章内容。"
             normalized.append(
                 {
                     "level": int(item.get("level", 1)),
@@ -573,7 +577,7 @@ def normalize_sections(
             {
                 "level": 1,
                 "title": "施工组织设计",
-                "content": "【待完善】请 Hermes 根据招标文件要求生成通过制技术标正文。",
+                "content": "【待完善】请根据招标文件要求生成通过制技术标正文。",
                 "order": 1,
             }
         )
@@ -607,13 +611,39 @@ def add_markdown_content(
         if image:
             image_path = Path(image.group(2).strip().strip('"')).expanduser()
             if image_path.exists():
+                alt = image.group(1).strip()
+                landscape = alt.endswith("|landscape")
+                caption_text = alt.removesuffix("|landscape").strip()
+                if landscape:
+                    landscape_section = document.add_section(WD_SECTION.NEW_PAGE)
+                    landscape_section.orientation = WD_ORIENT.LANDSCAPE
+                    landscape_section.page_width, landscape_section.page_height = (
+                        landscape_section.page_height,
+                        landscape_section.page_width,
+                    )
+                    landscape_section.left_margin = Inches(0.55)
+                    landscape_section.right_margin = Inches(0.55)
+                    landscape_section.top_margin = Inches(0.55)
+                    landscape_section.bottom_margin = Inches(0.55)
                 paragraph = document.add_paragraph()
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                paragraph.add_run().add_picture(str(image_path), width=Inches(6.25))
-                if image.group(1).strip():
-                    caption = document.add_paragraph(image.group(1).strip())
+                paragraph.add_run().add_picture(
+                    str(image_path),
+                    # Leave enough vertical room for the caption and footer on
+                    # an A4 landscape page; width-only sizing preserves aspect.
+                    width=Inches(8.3 if landscape else 6.25),
+                )
+                if caption_text:
+                    caption = document.add_paragraph(caption_text)
                     caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     caption.runs[0].italic = True
+                if landscape:
+                    portrait_section = document.add_section(WD_SECTION.NEW_PAGE)
+                    portrait_section.orientation = WD_ORIENT.PORTRAIT
+                    portrait_section.page_width, portrait_section.page_height = (
+                        portrait_section.page_height,
+                        portrait_section.page_width,
+                    )
                 stats["paragraphs"] += 1
             else:
                 document.add_paragraph(f"【待人工确认：图形文件不存在：{image_path}】")
@@ -811,6 +841,7 @@ def add_word_table(
             if row_idx == 0:
                 _shade_cell(cell, header_fill)
     _apply_table_geometry(table, rows)
+    _apply_table_pagination(table)
 
 
 def generate_docx(
@@ -831,7 +862,7 @@ def generate_docx(
     apply_layout_profile(document, style_config=style_config)
     add_cover_page(document, title, style_config)
     add_toc_page(document)
-    document.add_paragraph("说明：本文件为 Hermes 生成的通过制技术标复核初稿，提交前需人工核查项目参数、格式和签章要求。")
+    document.add_paragraph("说明：本文件由施工组织设计生成台形成，提交前需人工核查项目参数、格式和签章要求。")
     numbering_state = _new_numbering_state(style_config)
 
     if requirements:
@@ -903,6 +934,7 @@ def generate_docx(
                 ],
             ],
         )
+        _apply_table_pagination(table)
 
     document.save(str(output_path))
     field_update = update_docx_fields(output_path)
@@ -913,6 +945,18 @@ def generate_docx(
         "field_update": field_update,
         "style_config": style_config,
     }
+
+
+def _apply_table_pagination(table: Any) -> None:
+    """Repeat the header and keep individual rows intact across page breaks."""
+    for index, row in enumerate(table.rows):
+        tr_pr = row._tr.get_or_add_trPr()
+        cant_split = OxmlElement("w:cantSplit")
+        tr_pr.append(cant_split)
+        if index == 0:
+            header = OxmlElement("w:tblHeader")
+            header.set(qn("w:val"), "true")
+            tr_pr.append(header)
 
 
 def update_docx_fields(docx_path: Path) -> dict[str, Any]:
@@ -1001,6 +1045,29 @@ def export_docx_to_pdf(docx_path: Path, pdf_path: Path) -> dict[str, Any]:
     pdf_path = pdf_path.resolve()
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
+    word_error = ""
+    word = None
+    try:
+        import win32com.client  # type: ignore
+
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        document = word.Documents.Open(str(docx_path))
+        document.Fields.Update()
+        for toc in document.TablesOfContents:
+            toc.Update()
+        document.SaveAs(str(pdf_path), FileFormat=17)
+        document.Close(False)
+        return {"status": "ready", "pdf_path": str(pdf_path), "engine": "word_com"}
+    except Exception as exc:
+        word_error = str(exc)
+    finally:
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+
     libreoffice = shutil.which("soffice") or shutil.which("libreoffice")
     if libreoffice:
         completed = subprocess.run(
@@ -1028,40 +1095,18 @@ def export_docx_to_pdf(docx_path: Path, pdf_path: Path) -> dict[str, Any]:
             "engine": "libreoffice",
             "stdout": completed.stdout,
             "stderr": completed.stderr,
-            "message": "LibreOffice conversion did not create the expected PDF.",
+            "message": (
+                "Microsoft Word和LibreOffice均未生成PDF。"
+                f" Word错误：{word_error or '不可用'}"
+            ),
         }
 
-    try:
-        import win32com.client  # type: ignore
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "pdf_path": str(pdf_path),
-            "engine": "none",
-            "message": f"PDF export requires Microsoft Word COM or LibreOffice: {exc}",
-        }
-
-    word = None
-    try:
-        word = win32com.client.DispatchEx("Word.Application")
-        word.Visible = False
-        document = word.Documents.Open(str(docx_path))
-        document.Fields.Update()
-        for toc in document.TablesOfContents:
-            toc.Update()
-        document.SaveAs(str(pdf_path), FileFormat=17)
-        document.Close(False)
-        return {"status": "ready", "pdf_path": str(pdf_path), "engine": "word_com"}
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "pdf_path": str(pdf_path),
-            "engine": "word_com",
-            "message": str(exc),
-        }
-    finally:
-        if word is not None:
-            try:
-                word.Quit()
-            except Exception:
-                pass
+    return {
+        "status": "blocked",
+        "pdf_path": str(pdf_path),
+        "engine": "none",
+        "message": (
+            "PDF导出需要Microsoft Word或LibreOffice。"
+            f" Word错误：{word_error or '组件不可用'}"
+        ),
+    }

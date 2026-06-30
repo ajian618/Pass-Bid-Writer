@@ -14,7 +14,13 @@ from .analysis import build_response_matrix, extract_tender_requirements
 from .assets import generate_document_assets
 from .blueprints import build_blueprint
 from .config import ensure_storage_dirs, get_settings
-from .documents import check_docx_compliance, generate_docx, safe_filename
+from .documents import (
+    check_docx_compliance,
+    export_docx_to_pdf,
+    generate_docx,
+    safe_filename,
+)
+from .drawings import build_drawing_registry, render_confirmed_drawing
 from .knowledge import canonical_section_title, load_case_assets
 from .model_router import ModelRouter
 from .projects import expand_project_archives, scan_single_project
@@ -416,7 +422,9 @@ def prepare_production_project(
         case_assets,
     )
     model_router = ModelRouter()
-    visual_jobs = build_visual_jobs(project["files"])
+    visual_jobs = build_visual_jobs(project["files"], project_root=project_path)
+    drawings, drawing_confirmations = build_drawing_registry(project["files"])
+    confirmations.extend(drawing_confirmations)
     state: dict[str, Any] = {
         "project": {
             "name": project["name"],
@@ -437,6 +445,7 @@ def prepare_production_project(
         "standard_clauses": [],
         "blueprint": blueprint,
         "case_assets": case_assets,
+        "drawings": drawings,
         "visual_jobs": visual_jobs,
         "visual_analysis": {
             "status": "pending",
@@ -588,6 +597,34 @@ def _persist_run_entities(conn, run_id: int, state: dict[str, Any]) -> None:
             (
                 run_id, fact["key"], fact["value"], fact["unit"], fact["source_path"],
                 fact["source_page"], fact["source_excerpt"], fact["confidence"], fact["status"], now,
+            ),
+        )
+    for drawing in state.get("drawings", []):
+        conn.execute(
+            """
+            INSERT INTO drawing_assets
+            (production_run_id, source_dwg_path, source_pdf_path, source_page, drawing_no,
+             title, caption, crop_json, applicable_sections_json, placement, preview_path,
+             confidence, status, confirmed_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                drawing.get("source_dwg_path", ""),
+                drawing.get("source_pdf_path", ""),
+                drawing.get("source_page"),
+                drawing.get("drawing_no", ""),
+                drawing.get("title", ""),
+                drawing.get("caption", ""),
+                _json(drawing.get("crop", {})),
+                _json(drawing.get("applicable_sections", [])),
+                drawing.get("placement", "inline"),
+                drawing.get("preview_path", ""),
+                float(drawing.get("confidence", 0)),
+                drawing.get("status", "pending"),
+                drawing.get("confirmed_at", ""),
+                now,
+                now,
             ),
         )
     for section in state["sections"]:
@@ -801,18 +838,21 @@ def mark_generation_started(run_id: int) -> dict[str, Any]:
     return state
 
 
-def generate_production_docx(run_id: int) -> dict[str, Any]:
+def generate_production_docx(
+    run_id: int,
+    *,
+    generate_missing: bool = True,
+    run_text_review: bool = True,
+) -> dict[str, Any]:
     state = get_run_state(run_id)
     if state is None:
         raise ValueError(f"production run not found: {run_id}")
     if state.get("status") in {"ready_for_generation", "generation_failed", "partial_draft"}:
         state = mark_generation_started(run_id)
-    elif state.get("status") != "generating":
+    elif state.get("status") not in {"generating", "ready_for_assembly"}:
         raise ValueError("必须先确认《施组编制任务书》后才能生成正文")
     router = ModelRouter()
     text_model = next(item for item in router.status() if item["role"] == "text_master")
-    if not text_model["configured"]:
-        raise RuntimeError("DEEPSEEK_API_KEY 未配置，系统不会用其他模型替代文字主脑")
     generated_by_code: dict[str, dict[str, Any]] = {
         section["code"]: {"title": section["title"], "content": section["content"]}
         for section in state.get("sections", [])
@@ -824,6 +864,13 @@ def generate_production_docx(run_id: int) -> dict[str, Any]:
     pending_sections = [
         section for section in sections if section["code"] not in generated_by_code
     ]
+    if pending_sections and not generate_missing:
+        missing = "、".join(
+            f"{section['code']} {section['title']}" for section in pending_sections[:5]
+        )
+        raise ValueError(f"尚未完成全部章节写作：{missing}")
+    if pending_sections and not text_model["configured"]:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，系统不会用其他模型替代文字主脑")
     state["generation"].update(
         {
             "completed": successful_sections,
@@ -940,18 +987,52 @@ def generate_production_docx(run_id: int) -> dict[str, Any]:
         "07": [("质量控制流程图", state["assets"]["quality_flow_png"])],
         "08": [("安全管理流程图", state["assets"]["safety_flow_png"])],
     }
-    drawing_previews = [
-        image_path
-        for job in state.get("visual_jobs", [])
-        if job.get("source_role") == "drawing" and job.get("status") in {"ready", "needs_review"}
-        for image_path in job.get("images", [])[:2]
-        if Path(image_path).exists()
-    ]
-    if drawing_previews:
-        image_bindings["04"] = [
-            (f"设计图纸预览引用 {index}（不修改CAD原文件）", image_path)
-            for index, image_path in enumerate(drawing_previews[:2], start=1)
-        ]
+    drawing_output_dir = output_dir / "assets" / "drawings"
+    for drawing in state.get("drawings", []):
+        if drawing.get("status") != "confirmed" or not drawing.get("source_pdf_path"):
+            continue
+        try:
+            image_path = render_confirmed_drawing(drawing, drawing_output_dir)
+        except Exception as exc:
+            state.setdefault("confirmations", []).append(
+                {
+                    "category": "图纸插入失败",
+                    "title": drawing.get("title", "设计图纸"),
+                    "detail": str(exc),
+                    "severity": "high",
+                    "affected_sections": drawing.get("applicable_sections", ["全局"]),
+                    "status": "open",
+                    "recommended_action": "检查图纸PDF页码和裁剪范围后重新装配。",
+                }
+            )
+            continue
+        targets = drawing.get("applicable_sections") or ["04"]
+        for target in targets:
+            code = str(target)
+            if not re.fullmatch(r"\d{2}", code):
+                matched = next(
+                    (
+                        section["code"]
+                        for section in sections
+                        if code in section.get("title", "")
+                    ),
+                    "04",
+                )
+                code = matched
+            caption = (
+                drawing.get("caption")
+                or drawing.get("title")
+                or drawing.get("drawing_no")
+                or "设计图纸引用"
+            )
+            if drawing.get("placement") == "landscape_page":
+                caption = f"{caption}|landscape"
+            image_bindings.setdefault(code, []).append(
+                (
+                    caption,
+                    str(image_path),
+                )
+            )
     for section, generated in zip(sections, generated_sections, strict=True):
         for caption, image_path in image_bindings.get(section["code"], []):
             generated["content"] += f"\n\n![{caption}]({image_path})"
@@ -972,6 +1053,10 @@ def generate_production_docx(run_id: int) -> dict[str, Any]:
     )
     state["model_runs"] = model_runs
     state["docx"] = result
+    state["outputs"] = {
+        **state.get("outputs", {}),
+        "docx_path": result.get("docx_path", ""),
+    }
     state["compliance"] = check_docx_compliance(
         docx_path=output_path,
         requirements=state.get("requirements", {}),
@@ -979,7 +1064,14 @@ def generate_production_docx(run_id: int) -> dict[str, Any]:
     _apply_compliance_to_matrix(state)
     state["document_audit"] = _audit_generated_docx(output_path, state)
     _append_audit_confirmations(state)
-    state["text_review"] = _run_final_text_review(router, state)
+    if run_text_review:
+        state["text_review"] = _run_final_text_review(router, state)
+    else:
+        state["text_review"] = state.get("text_review") or {
+            "status": "pending_text_review",
+            "issues": [],
+            "message": "等待DeepSeek完成跨章节文字复核。",
+        }
     try:
         state["visual_report"] = visual_check_document(
             target_path=output_path,
@@ -1029,6 +1121,354 @@ def generate_production_docx(run_id: int) -> dict[str, Any]:
     return state
 
 
+def get_production_section_task(
+    run_id: int,
+    section_code: str = "",
+) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    if state.get("status") in {"ready_for_generation", "generation_failed", "partial_draft"}:
+        state = mark_generation_started(run_id)
+    if state.get("status") != "generating":
+        raise ValueError("必须先确认《施组编制任务书》后才能领取章节写作任务")
+
+    pending = [
+        section
+        for section in state.get("sections", [])
+        if section.get("status") != "generated" or not section.get("content")
+    ]
+    if not pending:
+        return {
+            "run_id": int(run_id),
+            "done": True,
+            "message": "全部章节已经人工确认，可以装配DOCX。",
+            "completed": len(state.get("sections", [])),
+            "total": len(state.get("sections", [])),
+        }
+
+    selected = None
+    if section_code:
+        selected = next(
+            (item for item in pending if item.get("code") == section_code),
+            None,
+        )
+        if selected is None:
+            raise ValueError(f"待写章节不存在或已完成：{section_code}")
+    else:
+        selected = pending[0]
+    return {
+        "run_id": int(run_id),
+        "done": False,
+        "section_code": selected["code"],
+        "title": selected["title"],
+        "purpose": selected.get("purpose", ""),
+        "acceptance": selected.get("acceptance", []),
+        "components": selected.get("components", []),
+        "project_basis": selected.get("project_basis", []),
+        "reference_basis": selected.get("reference_basis", []),
+        "missing_inputs": selected.get("missing_inputs", []),
+        "writing_prompt": _section_prompt(state, selected),
+        "completed": len(state.get("sections", [])) - len(pending),
+        "total": len(state.get("sections", [])),
+    }
+
+
+def save_production_section(
+    run_id: int,
+    section_code: str,
+    content: str,
+    *,
+    author_model: str = "DeepSeek",
+) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    if state.get("status") in {"ready_for_generation", "generation_failed", "partial_draft"}:
+        state = mark_generation_started(run_id)
+    if state.get("status") != "generating":
+        raise ValueError("当前生产任务不在章节生成阶段")
+    section = next(
+        (item for item in state.get("sections", []) if item.get("code") == section_code),
+        None,
+    )
+    if section is None:
+        raise ValueError(f"章节不存在：{section_code}")
+    text = str(content or "").strip()
+    if len(text) < 200:
+        raise ValueError("章节正文过短；必须提交完整、可复核的章节内容")
+
+    text = _strip_duplicate_section_heading(text, section.get("title", ""))
+    text = _sanitize_generated_structure(text)
+    text, findings = _sanitize_unsupported_claims(text, state, section)
+    text = _append_basis_traceability(text, section)
+    section["content"] = text
+    section["status"] = "generated"
+    section["completion"] = 100
+    section["model"] = author_model
+    for finding in findings:
+        state.setdefault("confirmations", []).append(
+            {
+                "category": "模型生成待确认",
+                "title": f"{section['title']}待确认",
+                "detail": finding,
+                "severity": "medium",
+                "affected_sections": [section["title"]],
+                "status": "open",
+                "recommended_action": "补充项目资料或由人工核对该项依据。",
+            }
+        )
+
+    generated = [
+        item
+        for item in state.get("sections", [])
+        if item.get("status") == "generated" and item.get("content")
+    ]
+    total = len(state.get("sections", []))
+    state.setdefault("generation", {}).update(
+        {
+            "total": total,
+            "completed": len(generated),
+            "successful": len(generated),
+            "failed": 0,
+        }
+    )
+    state.setdefault("metrics", {})["chapter_completion"] = round(
+        len(generated) / max(total, 1) * 100
+    )
+    model_run = {
+        "role": "text_master",
+        "provider": "deepseek",
+        "model": author_model,
+        "task_type": "section_generation",
+        "section": section["title"],
+        "input_basis": section.get("project_basis", [])
+        + section.get("reference_basis", []),
+        "status": "success",
+    }
+    state.setdefault("model_runs", []).append(model_run)
+    _persist_model_run(run_id, model_run)
+    _save_run_state(run_id, state)
+
+    next_section = next(
+        (
+            item
+            for item in state.get("sections", [])
+            if item.get("status") != "generated" or not item.get("content")
+        ),
+        None,
+    )
+    return {
+        "run_id": int(run_id),
+        "saved": section_code,
+        "completed": len(generated),
+        "total": total,
+        "done": next_section is None,
+        "next_section": (
+            {"section_code": next_section["code"], "title": next_section["title"]}
+            if next_section
+            else None
+        ),
+        "human_confirmation_count": len(findings),
+    }
+
+
+def generate_production_section(
+    run_id: int,
+    section_code: str,
+    *,
+    revision_instruction: str = "",
+) -> dict[str, Any]:
+    """Generate or revise exactly one chapter and wait for human approval."""
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    if state.get("status") in {"ready_for_generation", "generation_failed", "partial_draft"}:
+        state = mark_generation_started(run_id)
+    if state.get("status") not in {"generating", "ready_for_assembly"}:
+        raise ValueError("必须先确认《施组编制任务书》后才能生成章节")
+    sections = state.get("sections", [])
+    section = next((item for item in sections if item.get("code") == section_code), None)
+    if section is None:
+        raise ValueError(f"章节不存在：{section_code}")
+    first_unapproved = next(
+        (item for item in sections if item.get("status") != "generated"),
+        None,
+    )
+    if first_unapproved and first_unapproved.get("code") != section_code:
+        raise ValueError(
+            f"请先确认 {first_unapproved['code']} {first_unapproved['title']}"
+        )
+
+    router = ModelRouter()
+    text_model = next(item for item in router.status() if item["role"] == "text_master")
+    if not text_model["configured"]:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，无法生成章节正文")
+    result = _generate_one_section(
+        router,
+        text_model,
+        state,
+        section,
+        revision_instruction=revision_instruction,
+    )
+    previous_content = str(section.get("content", ""))
+    section.setdefault("revisions", []).append(
+        {
+            "created_at": _now(),
+            "instruction": revision_instruction,
+            "previous_content": previous_content,
+            "model": result["model"],
+        }
+    )
+    section["content"] = result["content"]
+    section["status"] = "awaiting_approval"
+    section["completion"] = 90
+    section["model"] = result["model"]
+    for item in result["human_confirm_items"]:
+        state.setdefault("confirmations", []).append(
+            {
+                "category": "章节生成待确认",
+                "title": f"{section['title']}待确认",
+                "detail": str(item),
+                "severity": "medium",
+                "affected_sections": [section["title"]],
+                "status": "open",
+                "recommended_action": "补充项目依据，或在确认章节前核对该内容。",
+            }
+        )
+    model_run = {
+        "role": "text_master",
+        "provider": "deepseek",
+        "model": result["model"],
+        "task_type": "section_revision" if revision_instruction else "section_generation",
+        "section": section["title"],
+        "input_basis": section.get("project_basis", [])
+        + section.get("reference_basis", []),
+        "status": "success",
+    }
+    state.setdefault("model_runs", []).append(model_run)
+    _persist_model_run(run_id, model_run)
+    state["status"] = "generating"
+    state.setdefault("generation", {})["current_section"] = section_code
+    state["generation"]["awaiting_approval"] = section_code
+    state.setdefault("metrics", {})["chapter_completion"] = round(
+        sum(item.get("completion", 0) for item in sections) / max(len(sections), 1)
+    )
+    _save_run_state(run_id, state)
+    return state
+
+
+def approve_production_section(run_id: int, section_code: str) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    section = next(
+        (item for item in state.get("sections", []) if item.get("code") == section_code),
+        None,
+    )
+    if section is None:
+        raise ValueError(f"章节不存在：{section_code}")
+    if section.get("status") != "awaiting_approval" or not section.get("content"):
+        raise ValueError("该章节尚无待确认正文")
+    section["status"] = "generated"
+    section["completion"] = 100
+    section["approved_at"] = _now()
+    approved = [
+        item
+        for item in state.get("sections", [])
+        if item.get("status") == "generated"
+    ]
+    total = len(state.get("sections", []))
+    state.setdefault("generation", {}).update(
+        {
+            "total": total,
+            "completed": len(approved),
+            "successful": len(approved),
+            "failed": 0,
+            "awaiting_approval": "",
+        }
+    )
+    state["metrics"]["chapter_completion"] = round(len(approved) / max(total, 1) * 100)
+    state["status"] = "ready_for_assembly" if len(approved) == total else "generating"
+    state["stage"] = "文档装配" if len(approved) == total else "章节生成"
+    state["stage_index"] = 11 if len(approved) == total else 7
+    _save_run_state(run_id, state)
+    return state
+
+
+def assemble_production_docx(run_id: int) -> dict[str, Any]:
+    """Assemble only after every AI-generated section is human-approved."""
+    state = generate_production_docx(
+        run_id,
+        generate_missing=False,
+        run_text_review=False,
+    )
+    docx_path = Path(str(state.get("docx", {}).get("docx_path", "")))
+    pdf_path = docx_path.with_suffix(".pdf")
+    state["pdf"] = export_docx_to_pdf(docx_path, pdf_path)
+    if state["pdf"].get("status") == "ready":
+        state.setdefault("outputs", {})["pdf_path"] = str(pdf_path)
+    if state["pdf"].get("status") != "ready":
+        state.setdefault("confirmations", []).append(
+            {
+                "category": "PDF导出待完成",
+                "title": "DOCX已生成，但PDF转换未完成",
+                "detail": state["pdf"].get("message", "Word或LibreOffice转换失败"),
+                "severity": "medium",
+                "affected_sections": ["全局"],
+                "status": "open",
+                "recommended_action": "检查Microsoft Word后重新装配，或人工另存为PDF。",
+            }
+        )
+    _save_run_state(run_id, state)
+    return state
+
+
+def record_production_text_review(
+    run_id: int,
+    *,
+    status: str,
+    issues: list[dict[str, Any]] | None = None,
+    summary: str = "",
+) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"passed", "needs_review", "blocked"}:
+        raise ValueError("status必须为 passed、needs_review 或 blocked")
+    accepted, dismissed = _validate_review_issues(state, issues or [])
+    state["text_review"] = {
+        "status": normalized_status if accepted or normalized_status == "passed" else "passed",
+        "issues": accepted,
+        "dismissed_issues": dismissed,
+        "summary": str(summary or "").strip(),
+        "reviewer": "DeepSeek",
+        "reviewed_at": _now(),
+    }
+    for issue in accepted:
+        state.setdefault("confirmations", []).append(
+            {
+                "category": "DeepSeek文字复核",
+                "title": issue.get("title", "跨章节文字问题"),
+                "detail": issue.get("detail", ""),
+                "severity": issue.get("severity", "medium"),
+                "affected_sections": issue.get("affected_sections", ["全局"]),
+                "status": "open",
+                "recommended_action": issue.get(
+                    "recommended_action",
+                    "由DeepSeek修订相关章节或人工确认。",
+                ),
+            }
+        )
+    _save_run_state(run_id, state)
+    return {
+        "run_id": int(run_id),
+        "text_review": state["text_review"],
+        "status": state.get("status"),
+    }
+
+
 def mark_generation_failed(run_id: int, error: str) -> dict[str, Any] | None:
     state = get_run_state(run_id)
     if state is None:
@@ -1040,7 +1480,11 @@ def mark_generation_failed(run_id: int, error: str) -> dict[str, Any] | None:
     return state
 
 
-def review_production_draft(run_id: int) -> dict[str, Any]:
+def review_production_draft(
+    run_id: int,
+    *,
+    run_text_review: bool = True,
+) -> dict[str, Any]:
     state = get_run_state(run_id)
     if state is None:
         raise ValueError(f"production run not found: {run_id}")
@@ -1059,8 +1503,9 @@ def review_production_draft(run_id: int) -> dict[str, Any]:
     _apply_compliance_to_matrix(state)
     state["document_audit"] = _audit_generated_docx(docx_path, state)
     _append_audit_confirmations(state)
-    router = ModelRouter()
-    state["text_review"] = _run_final_text_review(router, state)
+    if run_text_review:
+        router = ModelRouter()
+        state["text_review"] = _run_final_text_review(router, state)
     layout_profile = _recommended_layout_profile(state)
     try:
         state["visual_report"] = visual_check_document(
@@ -1107,6 +1552,7 @@ def _generate_one_section(
     text_model: dict[str, Any],
     state: dict[str, Any],
     section: dict[str, Any],
+    revision_instruction: str = "",
 ) -> dict[str, Any]:
     system = (
         "你是水利工程施工组织设计文字主脑。只允许使用输入中的项目依据和编制依据。"
@@ -1117,10 +1563,17 @@ def _generate_one_section(
     last_error: Exception | None = None
     for attempt in range(3):
         try:
+            prompt = _section_prompt(state, section)
+            if revision_instruction:
+                prompt += (
+                    "\n\n用户修改要求："
+                    + revision_instruction
+                    + "\n请在保留所有有效依据和禁止虚构约束的前提下重写本章。"
+                )
             result = router.complete_json(
                 role="text_master",
                 system=system + (" 上次输出无法解析，请只输出合法JSON。" if attempt else ""),
-                prompt=_section_prompt(state, section),
+                prompt=prompt,
                 timeout=300,
                 max_tokens=int(os.environ.get("PASS_BID_SECTION_MAX_TOKENS", "3200")),
             )
@@ -1785,6 +2238,35 @@ def _save_run_state(run_id: int, state: dict[str, Any]) -> None:
                     _json(item.get("affected_sections", [])),
                     item.get("status", "open"),
                     item.get("resolution", ""),
+                    _now(),
+                    _now(),
+                ),
+            )
+        conn.execute("DELETE FROM drawing_assets WHERE production_run_id = ?", (run_id,))
+        for drawing in state.get("drawings", []):
+            conn.execute(
+                """
+                INSERT INTO drawing_assets
+                (production_run_id, source_dwg_path, source_pdf_path, source_page, drawing_no,
+                 title, caption, crop_json, applicable_sections_json, placement, preview_path,
+                 confidence, status, confirmed_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    drawing.get("source_dwg_path", ""),
+                    drawing.get("source_pdf_path", ""),
+                    drawing.get("source_page"),
+                    drawing.get("drawing_no", ""),
+                    drawing.get("title", ""),
+                    drawing.get("caption", ""),
+                    _json(drawing.get("crop", {})),
+                    _json(drawing.get("applicable_sections", [])),
+                    drawing.get("placement", "inline"),
+                    drawing.get("preview_path", ""),
+                    float(drawing.get("confidence", 0)),
+                    drawing.get("status", "pending"),
+                    drawing.get("confirmed_at", ""),
                     _now(),
                     _now(),
                 ),
