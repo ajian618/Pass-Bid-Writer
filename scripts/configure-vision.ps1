@@ -4,6 +4,7 @@ param(
   [string]$Model = "",
   [string]$ApiKey = "",
   [string]$BaseUrl = "",
+  [string]$ReviewApiKey = "",
   [switch]$Disable
 )
 
@@ -21,7 +22,7 @@ if (-not $Model) {
   } elseif ($Provider -eq "doubao") {
     $Model = "doubao-seed-1-6-vision"
   } else {
-    $Model = "qwen3.7-plus"
+    $Model = "qwen3.7-plus-2026-05-26"
   }
 }
 
@@ -52,6 +53,9 @@ $updates = [ordered]@{
   PASS_BID_VISION_PROVIDER = $Provider
   PASS_BID_VISION_MODEL = $Model
   PASS_BID_VISION_BASE_URL = $BaseUrl
+  PASS_BID_BATCH_MODEL = "qwen3.6-flash-2026-04-16"
+  PASS_BID_REVIEW_VISION_MODEL = "glm-5v-turbo"
+  ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 }
 
 if (-not $Disable) {
@@ -61,6 +65,9 @@ if (-not $Disable) {
     $updates["ARK_API_KEY"] = $ApiKey
   } else {
     $updates["DASHSCOPE_API_KEY"] = $ApiKey
+  }
+  if ($ReviewApiKey) {
+    $updates["ZHIPU_API_KEY"] = $ReviewApiKey
   }
 }
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from docx import Document
 from pypdf import PdfReader
+from openpyxl import load_workbook
 
 
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".yaml", ".yml"}
@@ -75,6 +76,62 @@ def extract_pdf_text(path: Path, max_pages: int = 120) -> str:
     return "\n\n".join(parts)
 
 
+def extract_pdf_pages(path: Path, max_pages: int = 500) -> list[dict[str, Any]]:
+    reader = PdfReader(str(path))
+    pages: list[dict[str, Any]] = []
+    for index, page in enumerate(reader.pages[:max_pages], start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        pages.append({"page": index, "text": text.strip()})
+    return pages
+
+
+def extract_located_text(path: Path) -> list[dict[str, Any]]:
+    """Return source-located text blocks for evidence and reference extraction."""
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return extract_pdf_pages(path)
+    if suffix in TEXT_SUFFIXES or suffix in {".doc", ".docx"}:
+        payload = extract_text(str(path))
+        return [{"page": None, "text": payload["text"]}]
+    if suffix == ".xlsx":
+        return extract_xlsx_blocks(path)
+    return []
+
+
+def extract_xlsx_blocks(path: Path, max_rows_per_sheet: int = 5000) -> list[dict[str, Any]]:
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    blocks: list[dict[str, Any]] = []
+    try:
+        for sheet in workbook.worksheets:
+            for row_index, row in enumerate(
+                sheet.iter_rows(values_only=False),
+                start=1,
+            ):
+                if row_index > max_rows_per_sheet:
+                    break
+                values = [
+                    str(cell.value).strip()
+                    for cell in row
+                    if cell.value is not None and str(cell.value).strip()
+                ]
+                if not values:
+                    continue
+                blocks.append(
+                    {
+                        "page": None,
+                        "sheet": sheet.title,
+                        "cell": f"A{row_index}",
+                        "text": " | ".join(values),
+                    }
+                )
+    finally:
+        workbook.close()
+    return blocks
+
+
 def extract_text(path_or_text: str) -> dict[str, Any]:
     candidate = Path(path_or_text).expanduser()
     if not candidate.exists():
@@ -90,6 +147,8 @@ def extract_text(path_or_text: str) -> dict[str, Any]:
         text = extract_docx_text(path)
     elif suffix == ".pdf":
         text = extract_pdf_text(path)
+    elif suffix == ".xlsx":
+        text = "\n".join(block["text"] for block in extract_xlsx_blocks(path))
     else:
         raise ValueError(f"Unsupported file type for text extraction: {path.suffix}")
     return {"source": "file", "path": str(path), "text": text}

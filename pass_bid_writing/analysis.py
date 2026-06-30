@@ -31,6 +31,21 @@ STANDARD_SECTIONS = [
     "资料管理、验收配合及后续服务",
 ]
 
+MANDATORY_MARKERS = (
+    "必须",
+    "应当",
+    "应提供",
+    "须提供",
+    "须附",
+    "不得",
+    "严禁",
+    "投标人应",
+    "承包人应",
+    "需提交",
+    "技术标要求",
+    "施工组织设计应",
+)
+
 
 def classify_requirement(line: str) -> str:
     scores: Counter[str] = Counter()
@@ -49,7 +64,7 @@ def extract_tender_requirements(text: str, *, source_path: str = "") -> dict[str
     seen: set[str] = set()
     all_keywords = [kw for keywords in REQUIREMENT_KEYWORDS.values() for kw in keywords]
     for line_no, line in lines:
-        if any(keyword in line for keyword in all_keywords):
+        if any(keyword in line for keyword in all_keywords) or any(marker in line for marker in MANDATORY_MARKERS):
             key = line[:120]
             if key in seen:
                 continue
@@ -171,6 +186,8 @@ def build_response_matrix(requirements: dict[str, Any], outline: list[dict[str, 
                 "category": item.get("category", "general"),
                 "requirement": item.get("requirement", ""),
                 "source_line": item.get("source_line", 0),
+                "source_page": item.get("source_page"),
+                "source_path": item.get("source_path", requirements.get("source_path", "")),
                 "target_section": section,
                 "response_strategy": response_strategy(item.get("category", "general")),
                 "draft_status": "pending",

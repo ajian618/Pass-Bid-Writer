@@ -21,9 +21,14 @@ not require the user to name MCP tools when their request is clear.
   treat it as an accepted project folder. Call `writing_ingest_passed_case`
   with visual analysis enabled.
 - If the user points to `projects/new_tenders/<project>` or `projects/unpassed/<project>`,
-  treat it as a new tender folder. Call `writing_prepare_new_tender`, then
-  continue the drafting flow and write outputs to that project's `outputs`
-  folder.
+  treat it as a new tender folder. For the evidence/reference production flow,
+  call `writing_prepare_production_system`, then
+  `writing_confirm_production_file_roles`. If visual jobs exist, call
+  `writing_analyze_production_visual_sources`. Resolve project-data conflicts
+  and model differences, ask the user to confirm the task specification, then
+  call `writing_confirm_production_task_spec` and
+  `writing_generate_production_docx`. Write outputs to that project's
+  `outputs` folder.
 - If the user provides only a tender file and asks to write, draft, produce, or
   prepare a pass/fail technical bid, call `writing_extract_tender_requirements`,
   `writing_build_response_matrix`, `writing_search_case_patterns`,
@@ -46,6 +51,25 @@ not require the user to name MCP tools when their request is clear.
   example two DOCX files with no hint which is tender and which is accepted bid.
 
 ## Required Flow
+
+For the production-system route, the controlled gate is:
+
+1. `writing_prepare_production_system`
+2. Human correction and `writing_confirm_production_file_roles`
+3. `writing_analyze_production_visual_sources` when visual jobs exist; Qwen is
+   primary and GLM is only used for flagged conflicts or low confidence
+4. Upload cited standard originals and resolve project-data/model conflicts
+5. Human confirmation of section deliverables, basis links and missing inputs
+6. `writing_confirm_production_task_spec`
+7. `writing_generate_production_docx`
+8. `writing_get_production_status` until generation, compliance, text review,
+   visual review and document assembly finish
+9. `writing_export_production_reports`
+
+Never bypass file-role or task-spec confirmation. An open high-severity data
+conflict or model difference blocks task-spec confirmation. Never use model
+memory as the sole basis for a project fact, quantity, date, standard clause
+or normative conclusion.
 
 1. Learn accepted case pairs before drafting when examples are available.
 2. Extract tender requirements before writing正文.

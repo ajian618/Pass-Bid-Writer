@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -455,14 +456,74 @@ def _set_cell_text(
     style_config = style_config or {}
     table_font, table_east_asia = style_config.get("table_font", ("SimSun", "宋体"))
     text_color = style_config.get("table_header_text_color", "000000") if bold else None
-    cell.text = text
+    cell.text = ""
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     for paragraph in cell.paragraphs:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if bold else WD_ALIGN_PARAGRAPH.LEFT
         paragraph.paragraph_format.first_line_indent = Pt(0)
-        for run in paragraph.runs:
-            run.bold = bold
+        segments = re.split(r"(\*\*.+?\*\*)", str(text))
+        for segment in segments:
+            if not segment:
+                continue
+            marked_bold = segment.startswith("**") and segment.endswith("**")
+            clean = segment[2:-2] if marked_bold else segment
+            run = paragraph.add_run(clean)
+            run.bold = bold or marked_bold
             _set_run_font(run, table_font, table_east_asia, 10.5, color=text_color)
+
+
+def _set_cell_margins(cell, top: int = 90, start: int = 120, bottom: int = 90, end: int = 120) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.first_child_found_in("w:tcMar")
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+    for tag, value in (("top", top), ("start", start), ("bottom", bottom), ("end", end)):
+        node = tc_mar.find(qn(f"w:{tag}"))
+        if node is None:
+            node = OxmlElement(f"w:{tag}")
+            tc_mar.append(node)
+        node.set(qn("w:w"), str(value))
+        node.set(qn("w:type"), "dxa")
+
+
+def _apply_table_geometry(table, rows: list[list[str]], total_width: int = 8640) -> None:
+    if not rows or not table.columns:
+        return
+    column_count = len(table.columns)
+    weights: list[int] = []
+    for column in range(column_count):
+        lengths = [
+            len(str(row[column])) if column < len(row) else 0
+            for row in rows
+        ]
+        weights.append(max(6, min(max(lengths, default=6), 40)))
+    weight_total = max(sum(weights), 1)
+    minimum_width = max(360, min(720, total_width // column_count))
+    widths = [max(minimum_width, round(total_width * weight / weight_total)) for weight in weights]
+    difference = total_width - sum(widths)
+    widths[-1] += difference
+    table.autofit = False
+    tbl_pr = table._tbl.tblPr
+    tbl_width = tbl_pr.first_child_found_in("w:tblW")
+    if tbl_width is None:
+        tbl_width = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_width)
+    tbl_width.set(qn("w:w"), str(total_width))
+    tbl_width.set(qn("w:type"), "dxa")
+    grid = table._tbl.tblGrid
+    for index, grid_col in enumerate(grid.gridCol_lst):
+        grid_col.set(qn("w:w"), str(widths[index]))
+    for row in table.rows:
+        for index, cell in enumerate(row.cells):
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_width = tc_pr.first_child_found_in("w:tcW")
+            if tc_width is None:
+                tc_width = OxmlElement("w:tcW")
+                tc_pr.append(tc_width)
+            tc_width.set(qn("w:w"), str(widths[index]))
+            tc_width.set(qn("w:type"), "dxa")
+            _set_cell_margins(cell)
 
 
 def normalize_sections(
@@ -542,6 +603,22 @@ def add_markdown_content(
             numbered_list_counter = 0
             stats["tables"] += 1
             continue
+        image = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$", line)
+        if image:
+            image_path = Path(image.group(2).strip().strip('"')).expanduser()
+            if image_path.exists():
+                paragraph = document.add_paragraph()
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                paragraph.add_run().add_picture(str(image_path), width=Inches(6.25))
+                if image.group(1).strip():
+                    caption = document.add_paragraph(image.group(1).strip())
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    caption.runs[0].italic = True
+                stats["paragraphs"] += 1
+            else:
+                document.add_paragraph(f"【待人工确认：图形文件不存在：{image_path}】")
+            idx += 1
+            continue
         heading = _parse_markdown_or_chinese_heading(line)
         if heading:
             level, title = heading
@@ -557,7 +634,8 @@ def add_markdown_content(
             idx += 1
             continue
         if re.match(r"^[-*]\s+", line):
-            paragraph = document.add_paragraph(re.sub(r"^[-*]\s+", "", line), style="List Bullet")
+            paragraph = document.add_paragraph(style="List Bullet")
+            _add_inline_markdown(paragraph, re.sub(r"^[-*]\s+", "", line))
             paragraph.paragraph_format.first_line_indent = Pt(0)
             numbered_list_counter = 0
             stats["lists"] += 1
@@ -566,16 +644,31 @@ def add_markdown_content(
         numbered = re.match(r"^\d+[.)、]\s+(.+)$", line)
         if numbered:
             numbered_list_counter += 1
-            paragraph = document.add_paragraph(f"{numbered_list_counter}、{numbered.group(1).strip()}")
+            paragraph = document.add_paragraph()
+            _add_inline_markdown(
+                paragraph,
+                f"{numbered_list_counter}、{numbered.group(1).strip()}",
+            )
             paragraph.paragraph_format.first_line_indent = Pt(0)
             stats["lists"] += 1
             idx += 1
             continue
-        document.add_paragraph(line)
+        paragraph = document.add_paragraph()
+        _add_inline_markdown(paragraph, line)
         numbered_list_counter = 0
         stats["paragraphs"] += 1
         idx += 1
     return stats
+
+
+def _add_inline_markdown(paragraph, text: str) -> None:
+    for segment in re.split(r"(\*\*.+?\*\*)", text):
+        if not segment:
+            continue
+        marked_bold = segment.startswith("**") and segment.endswith("**")
+        clean = segment[2:-2] if marked_bold else segment
+        run = paragraph.add_run(clean)
+        run.bold = marked_bold
 
 
 def _parse_markdown_or_chinese_heading(line: str) -> tuple[int, str] | None:
@@ -717,6 +810,7 @@ def add_word_table(
             _set_cell_text(cell, text, bold=row_idx == 0, style_config=style_config)
             if row_idx == 0:
                 _shade_cell(cell, header_fill)
+    _apply_table_geometry(table, rows)
 
 
 def generate_docx(
@@ -728,6 +822,7 @@ def generate_docx(
     requirements: dict[str, Any] | None = None,
     response_matrix: list[dict[str, Any]] | None = None,
     layout_profile: dict[str, Any] | None = None,
+    include_requirement_response: bool = False,
 ) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
@@ -743,6 +838,16 @@ def generate_docx(
         document.add_heading("通过制响应摘要", level=1)
         document.add_paragraph(f"检测模式：{requirements.get('detected_mode', 'unknown')}")
         document.add_paragraph(f"抽取要求数量：{requirements.get('requirement_count', 0)}")
+        if include_requirement_response:
+            document.add_heading("招标要求逐条响应说明", level=2)
+            for item in requirements.get("requirements", []):
+                requirement = str(item.get("requirement", "")).strip()
+                if not requirement:
+                    continue
+                paragraph = document.add_paragraph()
+                paragraph.add_run(f"{item.get('id', '')}：").bold = True
+                paragraph.add_run(requirement)
+                paragraph.add_run(" 本文件已在对应章节响应，最终以响应矩阵和人工复核结果为准。")
 
     for section in normalize_sections(
         outline=outline,
@@ -782,6 +887,22 @@ def generate_docx(
             _set_cell_text(cells[2], str(row.get("requirement", "")), style_config=style_config)
             _set_cell_text(cells[3], str(row.get("target_section", "")), style_config=style_config)
             _set_cell_text(cells[4], "是" if row.get("human_check") else "否", style_config=style_config)
+        _apply_table_geometry(
+            table,
+            [
+                headers,
+                *[
+                    [
+                        str(row.get("requirement_id", "")),
+                        str(row.get("category", "")),
+                        str(row.get("requirement", "")),
+                        str(row.get("target_section", "")),
+                        "是" if row.get("human_check") else "否",
+                    ]
+                    for row in response_matrix
+                ],
+            ],
+        )
 
     document.save(str(output_path))
     field_update = update_docx_fields(output_path)
@@ -796,6 +917,11 @@ def generate_docx(
 
 def update_docx_fields(docx_path: Path) -> dict[str, Any]:
     """Update TOC/page fields when Microsoft Word COM is available."""
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("PASS_BID_WRITING_DISABLE_WORD_COM") == "1":
+        return {
+            "status": "skipped",
+            "message": "Word COM field update is disabled for deterministic test execution.",
+        }
     try:
         import win32com.client  # type: ignore
     except Exception as exc:

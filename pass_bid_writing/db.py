@@ -158,6 +158,152 @@ def init_db(database_path: Path) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS production_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                project_type TEXT NOT NULL DEFAULT '水利工程通用',
+                stage TEXT NOT NULL DEFAULT '资料导入',
+                status TEXT NOT NULL DEFAULT 'draft',
+                state_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS standard_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                standard_code TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                version TEXT NOT NULL DEFAULT '',
+                source_page INTEGER,
+                source_path TEXT NOT NULL DEFAULT '',
+                official_url TEXT NOT NULL DEFAULT '',
+                local_path TEXT NOT NULL DEFAULT '',
+                sha256 TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending_download',
+                affected_sections_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS standard_clauses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                standard_code TEXT NOT NULL,
+                clause_id TEXT NOT NULL DEFAULT '',
+                clause_text TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                source_page INTEGER,
+                applicable_sections_json TEXT NOT NULL DEFAULT '[]',
+                applicability TEXT NOT NULL DEFAULT '',
+                mandatory_level TEXT NOT NULL DEFAULT 'unknown',
+                verification_status TEXT NOT NULL DEFAULT 'verified_local_source',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS case_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                asset_key TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content_json TEXT NOT NULL DEFAULT '{}',
+                applicable_sections_json TEXT NOT NULL DEFAULT '[]',
+                reuse_rule TEXT NOT NULL DEFAULT 'structure_only',
+                source_path TEXT NOT NULL DEFAULT '',
+                layout_profile_id INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id),
+                FOREIGN KEY(case_id) REFERENCES case_pairs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS content_components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                section_code TEXT NOT NULL,
+                component_id TEXT NOT NULL,
+                component_kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                required INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'not_started',
+                source_path TEXT NOT NULL DEFAULT '',
+                basis_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS project_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                fact_key TEXT NOT NULL,
+                value TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '',
+                source_path TEXT NOT NULL DEFAULT '',
+                source_page INTEGER,
+                source_excerpt TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'extracted',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS section_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                section_code TEXT NOT NULL,
+                title TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'not_started',
+                completion INTEGER NOT NULL DEFAULT 0,
+                requirements_json TEXT NOT NULL DEFAULT '[]',
+                inputs_json TEXT NOT NULL DEFAULT '[]',
+                acceptance_json TEXT NOT NULL DEFAULT '[]',
+                components_json TEXT NOT NULL DEFAULT '[]',
+                basis_json TEXT NOT NULL DEFAULT '{}',
+                content_text TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS confirmation_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                severity TEXT NOT NULL DEFAULT 'medium',
+                affected_sections_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'open',
+                resolution TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS model_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                production_run_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                input_basis_json TEXT NOT NULL DEFAULT '[]',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(production_run_id) REFERENCES production_runs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_case_pairs_title ON case_pairs(title);
             CREATE INDEX IF NOT EXISTS idx_case_pairs_type ON case_pairs(project_type);
             CREATE INDEX IF NOT EXISTS idx_lessons_scope ON writing_lessons(scope);
@@ -165,6 +311,14 @@ def init_db(database_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_project_files_role ON project_files(role);
             CREATE INDEX IF NOT EXISTS idx_layout_profiles_source ON layout_profiles(source_path);
             CREATE INDEX IF NOT EXISTS idx_visual_analyses_target ON visual_analyses(target_path);
+            CREATE INDEX IF NOT EXISTS idx_production_runs_project ON production_runs(project_id);
+            CREATE INDEX IF NOT EXISTS idx_standard_documents_run ON standard_documents(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_standard_clauses_run ON standard_clauses(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_case_assets_run ON case_assets(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_content_components_run ON content_components(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_project_facts_run ON project_facts(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_section_tasks_run ON section_tasks(production_run_id);
+            CREATE INDEX IF NOT EXISTS idx_confirmation_items_run ON confirmation_items(production_run_id);
             """
         )
         _add_column_if_missing(conn, "case_pairs", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
@@ -172,6 +326,8 @@ def init_db(database_path: Path) -> None:
         _add_column_if_missing(conn, "drafts", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "drafts", "layout_profile_id", "layout_profile_id INTEGER")
         _add_column_if_missing(conn, "drafts", "visual_report_json", "visual_report_json TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(conn, "section_tasks", "content_text", "content_text TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "section_tasks", "model", "model TEXT NOT NULL DEFAULT ''")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -191,6 +347,15 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         ("render_json", {}),
         ("analysis_json", {}),
         ("visual_report_json", {}),
+        ("state_json", {}),
+        ("affected_sections_json", []),
+        ("requirements_json", []),
+        ("inputs_json", []),
+        ("acceptance_json", []),
+        ("components_json", []),
+        ("basis_json", {}),
+        ("input_basis_json", []),
+        ("result_json", {}),
     ):
         if key in data:
             data[key.removesuffix("_json")] = _json_load(data.pop(key), default)

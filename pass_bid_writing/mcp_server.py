@@ -16,8 +16,18 @@ from .analysis import (
 from .config import ensure_storage_dirs, get_settings
 from .documents import check_docx_compliance, export_docx_to_pdf, generate_docx, safe_filename
 from .projects import resolve_projects_root, scan_projects, scan_single_project, select_project_files
+from .production import (
+    confirm_file_roles,
+    confirm_task_spec,
+    generate_production_docx,
+    get_run_state,
+    prepare_production_project,
+    review_production_draft,
+)
+from .reports import export_production_reports
 from .text import compact_text, extract_text
 from .vision import extract_layout_profile, visual_check_document
+from .visual_sources import analyze_visual_sources
 
 
 mcp = FastMCP(
@@ -344,6 +354,76 @@ def writing_prepare_new_tender(
         "recommended_search_queries": query_terms,
         "outputs_dir": str(project_path / "outputs"),
     }
+
+
+@mcp.tool()
+def writing_prepare_production_system(
+    project_dir: str,
+    project_type: str = "水利工程通用",
+    expand_archives: bool = True,
+) -> dict[str, Any]:
+    """
+    Build the evidence base, reference base and controlled construction-design task specification.
+
+    This is the required entry point for the new production workflow. It inventories
+    all project files, extracts project facts and cited standards, instantiates the
+    controlled water-conservancy blueprint, creates confirmation/conflict items and
+    exports the six review workbooks before any final prose is drafted.
+    """
+    return prepare_production_project(
+        project_dir,
+        project_type=project_type,
+        expand_archives=expand_archives,
+    )
+
+
+@mcp.tool()
+def writing_confirm_production_file_roles(run_id: int) -> dict[str, Any]:
+    """Confirm classified project file roles before the controlled task specification is approved."""
+    return confirm_file_roles(int(run_id))
+
+
+@mcp.tool()
+def writing_analyze_production_visual_sources(run_id: int) -> dict[str, Any]:
+    """Use Qwen for visual evidence extraction and GLM only for flagged conflicts or low confidence."""
+    return analyze_visual_sources(int(run_id))
+
+
+@mcp.tool()
+def writing_confirm_production_task_spec(run_id: int) -> dict[str, Any]:
+    """Confirm the generated construction-organization task specification and unlock chapter generation."""
+    return confirm_task_spec(int(run_id))
+
+
+@mcp.tool()
+def writing_get_production_status(run_id: int | None = None) -> dict[str, Any]:
+    """Read the latest or selected evidence/reference production state."""
+    state = get_run_state(run_id)
+    if state is None:
+        return {"status": "empty", "message": "No production run exists yet."}
+    return state
+
+
+@mcp.tool()
+def writing_export_production_reports(run_id: int) -> dict[str, Any]:
+    """Regenerate the task, response, basis, standards, confirmation and model-difference workbooks."""
+    state = get_run_state(int(run_id))
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    output_dir = Path(state["project"]["project_dir"]) / "outputs"
+    return {"run_id": int(run_id), "reports": export_production_reports(state, output_dir)}
+
+
+@mcp.tool()
+def writing_generate_production_docx(run_id: int) -> dict[str, Any]:
+    """Generate all unlocked chapters with DeepSeek and assemble the evidence-backed DOCX draft."""
+    return generate_production_docx(int(run_id))
+
+
+@mcp.tool()
+def writing_review_production_draft(run_id: int) -> dict[str, Any]:
+    """Re-run compliance, structural, DeepSeek consistency and visual review for an assembled draft."""
+    return review_production_draft(int(run_id))
 
 
 def _candidate_case_queries(
