@@ -17,15 +17,40 @@ $python = if ($env:PASS_BID_PYTHON) {
     (Get-Command python -ErrorAction Stop).Source
 }
 
-& $python -c "import fastapi, uvicorn, docx, openpyxl" 2>$null
-if ($LASTEXITCODE -ne 0) {
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5 promotes native stderr to NativeCommandError when
+    # ErrorActionPreference is Stop. Suppress only this expected probe failure
+    # and decide from Python's exit code instead.
+    $ErrorActionPreference = "SilentlyContinue"
+    & $python -c "import fastapi, uvicorn, docx, openpyxl" 2>$null
+    $dependencyProbeExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+
+if ($dependencyProbeExitCode -ne 0) {
+    Write-Host "Python dependencies are incomplete. Installing requirements..." -ForegroundColor Yellow
     $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        & $uv.Source pip install --python $python -r $requirements
-    } else {
-        & $python -m pip install -r $requirements
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 turns native stderr into NativeCommandError when
+        # ErrorActionPreference is Stop. Native package managers legitimately
+        # write progress and warnings to stderr, so rely on their exit code.
+        $ErrorActionPreference = "Continue"
+        if ($uv) {
+            & $uv.Source pip install --python $python -r $requirements
+        } else {
+            & $python -m pip install -r $requirements
+        }
+        $dependencyInstallExitCode = $LASTEXITCODE
     }
-    if ($LASTEXITCODE -ne 0) {
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($dependencyInstallExitCode -ne 0) {
         throw "Python dependency installation failed. Check network access or set PASS_BID_PYTHON."
     }
 }
