@@ -272,7 +272,7 @@ function Header({ data, projects, onImport, onConfig, onRefresh, onSelect }) {
         <option value="">选择历史项目</option>
         {projects.map((p) => <option key={p.run_id} value={p.run_id}>{p.name} · {p.stage}</option>)}
       </select>
-      <div className="model-strip">{(data.models || []).map((m) => <span key={m.role} className={m.configured ? "configured" : ""}>{m.model} · {m.configured ? "已连接" : "未配置"}</span>)}</div>
+      <div className="model-strip">{(data.models || []).map((m) => <span key={m.role} className={m.configured ? "configured" : ""}>{m.model} · {m.configured ? "已配置" : "未配置"}</span>)}</div>
       <div className="top-actions">
         <button className="icon-button" onClick={onConfig} title="模型配置"><Gear size={19} /></button>
         <button className="icon-button" onClick={onRefresh} title="刷新"><ArrowClockwise size={19} /></button>

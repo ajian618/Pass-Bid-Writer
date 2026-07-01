@@ -93,3 +93,4 @@ Write-Host "PassBidWriter V1 update completed." -ForegroundColor Green
 Write-Host "Old repo-local data was not migrated."
 Write-Host "Runtime data: $env:LOCALAPPDATA\PassBidWriter"
 Write-Host "Start now with: .\start.ps1"
+Write-Host "On a new PC, open the top-right Model Config page and enter DeepSeek and Bailian keys."
