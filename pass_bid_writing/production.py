@@ -220,7 +220,7 @@ def _resolve_fact_references(
         reference["status"] = "resolved"
         reference["resolved_value"] = target.get("value", "")
         reference["resolved_page"] = target.get("source_page")
-        target["status"] = "resolved_reference"
+        target["status"] = "extracted"
         target["confidence"] = max(float(target.get("confidence", 0)), 0.95)
         target.setdefault("reference_chain", []).append(
             {
@@ -1051,6 +1051,9 @@ def get_run_state(run_id: int | None = None) -> dict[str, Any] | None:
     if not row:
         return None
     state = json.loads(row["state_json"])
+    for fact in state.get("facts", []):
+        if fact.get("status") == "resolved_reference":
+            fact["status"] = "extracted"
     state["run_id"] = int(row["id"])
     return state
 

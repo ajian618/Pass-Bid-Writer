@@ -255,6 +255,38 @@ function ConfigModal({ open, onClose, onSaved }) {
   );
 }
 
+function DeleteProjectModal({ open, project, onClose, onDelete }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open) { setLoading(false); setError(""); }
+  }, [open, project?.name]);
+  if (!open) return null;
+  const remove = async () => {
+    setLoading(true); setError("");
+    try {
+      await onDelete();
+    } catch (e) {
+      setError(e.message);
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="modal-backdrop" onMouseDown={loading ? undefined : onClose}>
+      <section className="modal delete-project-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <header><div><h2>删除项目</h2><p>该操作不能撤销</p></div>
+          <button aria-label="关闭删除项目确认" className="icon-button" disabled={loading} onClick={onClose}><X size={20} /></button></header>
+        <div className="delete-project-body">
+          <div className="delete-warning"><Warning size={22} /><div><strong>确定删除“{project?.name}”吗？</strong><p>将删除工作台中的项目记录、分析状态和内部资料副本；你最初选择的原始资料夹不会被修改。</p></div></div>
+          {error && <div className="form-error">{error}</div>}
+        </div>
+        <footer><button type="button" className="button secondary" disabled={loading} onClick={onClose}>取消</button>
+          <button type="button" className="button danger" disabled={loading} onClick={remove}>{loading ? "正在删除…" : "确认删除项目"}</button></footer>
+      </section>
+    </div>
+  );
+}
+
 function Sidebar({ active, onChange, data }) {
   return (
     <aside className="sidebar">
@@ -271,7 +303,7 @@ function Sidebar({ active, onChange, data }) {
   );
 }
 
-function Header({ data, projects, onImport, onConfig, onRefresh, onSelect }) {
+function Header({ data, projects, onImport, onConfig, onRefresh, onSelect, onDelete, busy }) {
   return (
     <header className="topbar">
       <div className="project-title"><h1>{data.project?.name || "施工组织设计生成台"}</h1><StatusPill value={data.status} /></div>
@@ -283,6 +315,7 @@ function Header({ data, projects, onImport, onConfig, onRefresh, onSelect }) {
       <div className="top-actions">
         <button className="icon-button" onClick={onConfig} title="模型配置"><Gear size={19} /></button>
         <button className="icon-button" onClick={onRefresh} title="刷新"><ArrowClockwise size={19} /></button>
+        <button aria-label="删除当前项目" className="icon-button danger-icon" disabled={!data.run_id || busy} onClick={onDelete} title="删除当前项目"><Trash size={18} /></button>
         <button className="button primary compact" onClick={onImport}><Plus size={18} />新建项目</button>
       </div>
     </header>
@@ -690,6 +723,15 @@ export default function App() {
     if (result.job) setTrackedJob(result.job.id);
     notify("资料已复制，开始受控分析");
   };
+  const deleteCurrentProject = async () => {
+    const result = await api(`/api/projects/${data.run_id}`, { method: "DELETE" });
+    setData(result.state); setProjects(result.projects || []); setActive("overview"); setModal("");
+    if (result.deleted?.file_cleanup_error) {
+      notify("项目记录已删除，但工作台内部副本清理失败，请查看运行目录", true);
+    } else {
+      notify(result.deleted?.files_removed ? "项目及工作台内部副本已删除" : "项目记录已删除，原始资料未受影响");
+    }
+  };
   if (!data) return <div className="loading-screen"><ArrowClockwise className="spin" />正在启动生产台…</div>;
 
   let view;
@@ -706,12 +748,13 @@ export default function App() {
     <div className="app-shell">
       <Sidebar active={active} onChange={setActive} data={data} />
       <main className="app-main">
-        <Header data={data} projects={projects} onImport={() => setModal("project")} onConfig={() => setModal("config")} onRefresh={() => refresh()} onSelect={(id) => id && refresh(id)} />
+        <Header data={data} projects={projects} busy={busy} onImport={() => setModal("project")} onConfig={() => setModal("config")} onRefresh={() => refresh()} onSelect={(id) => id && refresh(id)} onDelete={() => setModal("delete-project")} />
         <div className="content"><WorkflowBar data={data} /><StageRail current={data.stage_index || 1} />{view}</div>
       </main>
       <ImportModal open={modal === "project"} kind="project" onClose={() => setModal("")} onSubmitted={onSubmitted} />
       <ImportModal open={modal === "case"} kind="case" onClose={() => setModal("")} onSubmitted={onSubmitted} />
       <ConfigModal open={modal === "config"} onClose={() => setModal("")} onSaved={() => refresh()} />
+      <DeleteProjectModal open={modal === "delete-project"} project={data.project} onClose={() => setModal("")} onDelete={deleteCurrentProject} />
       {toast && <div className={`toast ${toast.error ? "error" : ""}`}>{toast.error ? <Warning size={18} /> : <CheckCircle size={18} />}{toast.message}</div>}
     </div>
   );

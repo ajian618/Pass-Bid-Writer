@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
     ensure_storage_dirs(settings)
     db.init_db(settings.database_path)
     recover_interrupted_jobs()
-    app = FastAPI(title="施工组织设计生成台", version="1.1.1")
+    app = FastAPI(title="施工组织设计生成台", version="1.1.2")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -150,7 +150,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "version": "1.1.1",
+            "version": "1.1.2",
             "data_dir": str(settings.data_dir),
             "models": ModelRouter().status(),
         }
@@ -158,6 +158,21 @@ def create_app() -> FastAPI:
     @app.get("/api/projects")
     def projects() -> list[dict[str, Any]]:
         return _list_projects()
+
+    @app.delete("/api/projects/{run_id}")
+    def delete_project(run_id: int) -> dict[str, Any]:
+        try:
+            deleted = _delete_project(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="项目不存在或已删除")
+        next_state = get_run_state()
+        return {
+            "deleted": deleted,
+            "projects": _list_projects(),
+            "state": _with_workflow(next_state or _empty_dashboard()),
+        }
 
     @app.get("/api/cases")
     def cases() -> list[dict[str, Any]]:
@@ -740,6 +755,27 @@ def _list_projects() -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def _delete_project(run_id: int) -> dict[str, Any] | None:
+    settings = get_settings()
+    with db.db_session(settings.database_path) as conn:
+        deleted = db.delete_project_with_runs(conn, run_id=run_id)
+    if deleted is None:
+        return None
+    project_dir = Path(str(deleted.get("project_dir", ""))).expanduser()
+    files_removed = False
+    if str(project_dir):
+        root = settings.projects_dir.resolve()
+        target = project_dir.resolve()
+        if target != root and root in target.parents and target.exists():
+            try:
+                shutil.rmtree(target)
+                files_removed = True
+            except OSError as exc:
+                deleted["file_cleanup_error"] = str(exc)
+    deleted["files_removed"] = files_removed
+    return deleted
 
 
 def _refresh_sections_and_metrics(state: dict[str, Any]) -> None:

@@ -63,7 +63,7 @@ git diff
 
 ### 最稳妥的全新安装
 
-如果旧目录非常乱，直接解压 `PassBidWriter-V1.1.1.zip` 到一个新目录，再运行：
+如果旧目录非常乱，直接解压 `PassBidWriter-V1.1.2.zip` 到一个新目录，再运行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -118,6 +118,8 @@ V1 不迁移旧数据库、旧学习数据和旧成果。旧目录可以保留�
 11. 在“章节生产”逐章生成、重写并接受。
 12. 全部章节接受后，在“交付中心”装配 DOCX/PDF并更新控制报告。
 
+右上角垃圾桶按钮可以删除当前项目。系统只删除工作台数据库记录和 `%LOCALAPPDATA%\PassBidWriter\projects` 内部副本，不修改最初导入的原始资料夹；有后台任务运行时禁止删除。
+
 成果默认位于：
 
 ```text
@@ -142,7 +144,7 @@ py -3.12 -m pytest -q
 .\build-release.ps1
 ```
 
-发布包生成在 `release\PassBidWriter-V1.1.1.zip`，内含编译前端、Python 源码、`setup.ps1` 和 `start.ps1`。
+发布包生成在 `release\PassBidWriter-V1.1.2.zip`，内含编译前端、Python 源码、`setup.ps1` 和 `start.ps1`。
 
 ## V1 边界
 

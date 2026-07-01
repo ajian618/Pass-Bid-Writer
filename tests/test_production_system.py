@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from docx import Document
 from PIL import Image
 
 from pass_bid_writing.assets import generate_document_assets
+from pass_bid_writing.config import get_settings
 from pass_bid_writing.documents import generate_docx
 from pass_bid_writing.production import (
     _detect_fact_conflicts,
@@ -72,6 +74,7 @@ class ProductionSystemTests(unittest.TestCase):
         names = [item for item in evidence["facts"] if item["key"] == "项目名称"]
         self.assertEqual(1, len(names))
         self.assertEqual("某河道综合治理工程", names[0]["value"])
+        self.assertEqual("extracted", names[0]["status"])
         self.assertEqual(1, len(names[0]["reference_chain"]))
         self.assertEqual([], _detect_fact_conflicts(evidence["facts"]))
         self.assertEqual("resolved", evidence["reference_links"][0]["status"])
@@ -101,6 +104,31 @@ class ProductionSystemTests(unittest.TestCase):
         self.assertEqual(1, len(conflicts))
         self.assertEqual("项目名称存在不一致", conflicts[0]["title"])
         self.assertIn("某河道综合治理工程", conflicts[0]["detail"])
+
+    def test_legacy_resolved_reference_fact_status_is_normalized_on_read(self) -> None:
+        (self.project / "招标文件.txt").write_text(
+            "某河道治理项目采用通过制评审。",
+            encoding="utf-8",
+        )
+        (self.project / "初步设计报告.txt").write_text(
+            "项目名称：某河道治理项目",
+            encoding="utf-8",
+        )
+        state = prepare_production_project(
+            str(self.project),
+            project_type="河道治理工程",
+        )
+        state["facts"][0]["status"] = "resolved_reference"
+        with db.db_session(get_settings().database_path) as conn:
+            conn.execute(
+                "UPDATE production_runs SET state_json = ? WHERE id = ?",
+                (json.dumps(state, ensure_ascii=False), state["run_id"]),
+            )
+
+        reloaded = get_run_state(state["run_id"])
+
+        self.assertIsNotNone(reloaded)
+        self.assertEqual("extracted", reloaded["facts"][0]["status"])
 
     def test_requirement_pointer_is_linked_to_appendix_requirement(self) -> None:
         blocks = [

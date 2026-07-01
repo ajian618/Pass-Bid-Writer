@@ -127,6 +127,56 @@ class WorkbenchApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_project_delete_removes_workspace_copy_but_not_original_input(self) -> None:
+        original = Path(self.temp.name) / "original-input"
+        original.mkdir()
+        original_file = original / "招标文件.txt"
+        original_file.write_text("某河道治理工程采用通过制评审。", encoding="utf-8")
+        response = self.client.post(
+            "/api/projects/import",
+            data={
+                "project_name": "待删除项目",
+                "project_type": "河道治理工程",
+                "relative_paths": ["原始资料/招标文件.txt"],
+            },
+            files=[
+                (
+                    "files",
+                    ("招标文件.txt", original_file.read_bytes(), "text/plain"),
+                )
+            ],
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        job_id = response.json()["job"]["id"]
+        state = self.client.get(f"/api/jobs/{job_id}").json()["state"]
+        run_id = state["run_id"]
+        workspace_copy = Path(state["project"]["project_dir"])
+        self.assertTrue(workspace_copy.exists())
+
+        deleted = self.client.delete(f"/api/projects/{run_id}")
+
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        payload = deleted.json()
+        self.assertTrue(payload["deleted"]["files_removed"])
+        self.assertFalse(workspace_copy.exists())
+        self.assertTrue(original_file.exists())
+        self.assertEqual([], payload["projects"])
+        self.assertIsNone(payload["state"]["run_id"])
+        settings = get_settings()
+        with db.db_session(settings.database_path) as conn:
+            self.assertEqual(
+                0,
+                conn.execute("SELECT COUNT(*) FROM production_runs").fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                conn.execute("SELECT COUNT(*) FROM project_files").fetchone()[0],
+            )
+
+    def test_project_delete_rejects_unknown_run(self) -> None:
+        response = self.client.delete("/api/projects/99999")
+        self.assertEqual(response.status_code, 404)
+
     def test_model_config_is_written_outside_repository(self) -> None:
         response = self.client.patch(
             "/api/config",

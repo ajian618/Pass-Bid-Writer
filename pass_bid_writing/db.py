@@ -794,6 +794,70 @@ def create_or_update_project(
     return int(cur.lastrowid)
 
 
+def delete_project_with_runs(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT pr.project_id, pr.state_json, p.name, p.project_dir
+        FROM production_runs pr
+        JOIN projects p ON p.id = pr.project_id
+        WHERE pr.id = ?
+        """,
+        (int(run_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    project_id = int(row["project_id"])
+    run_rows = conn.execute(
+        "SELECT id FROM production_runs WHERE project_id = ?",
+        (project_id,),
+    ).fetchall()
+    run_ids = [int(item["id"]) for item in run_rows]
+    if run_ids:
+        placeholders = ",".join("?" for _ in run_ids)
+        active = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM workflow_jobs
+            WHERE production_run_id IN ({placeholders})
+              AND status IN ('queued', 'running')
+            """,
+            run_ids,
+        ).fetchone()
+        if active and int(active["count"]) > 0:
+            raise ValueError("项目仍有后台任务正在运行，请等待任务结束后再删除")
+        for table in (
+            "workflow_jobs",
+            "drawing_assets",
+            "model_runs",
+            "confirmation_items",
+            "section_tasks",
+            "project_facts",
+            "content_components",
+            "case_assets",
+            "standard_clauses",
+            "standard_documents",
+        ):
+            conn.execute(
+                f"DELETE FROM {table} WHERE production_run_id IN ({placeholders})",
+                run_ids,
+            )
+    conn.execute("DELETE FROM production_runs WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM project_files WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    state = _json_load(row["state_json"], {})
+    project = state.get("project", {})
+    return {
+        "project_id": project_id,
+        "run_ids": run_ids,
+        "name": project.get("name") or row["name"],
+        "project_dir": project.get("project_dir") or row["project_dir"],
+    }
+
+
 def upsert_project_file(
     conn: sqlite3.Connection,
     *,

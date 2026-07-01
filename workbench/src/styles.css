@@ -47,6 +47,8 @@ button { cursor: pointer; }
 .button.primary { background: var(--blue); color: #fff; }
 .button.primary:hover { background: #0e5bc8; }
 .button.secondary { background: #fff; border-color: #cdd6e1; color: #28405e; }
+.button.danger { background: var(--danger); color: #fff; }
+.button.danger:hover { background: #bd3434; }
 .button.compact { min-height: 36px; padding: 0 13px; }
 .button.wide { width: 100%; margin-top: 18px; }
 .button:disabled { opacity: .48; cursor: not-allowed; }
@@ -184,6 +186,13 @@ td small { color: var(--muted); margin-top: 4px; }
 .review-modal footer { flex: 0 0 auto; min-height: 68px; margin: 0; padding: 12px 22px; border-top: 1px solid var(--border); background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 14px; box-shadow: 0 -6px 18px rgba(24, 42, 65, .05); }
 .review-modal footer > span { color: var(--muted); font-size: 10px; }
 .review-modal footer > div { display: flex; gap: 9px; flex: 0 0 auto; }
+.delete-project-modal { width: min(520px, calc(100vw - 40px)); }
+.delete-project-body { padding: 20px 22px; }
+.delete-warning { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #f0c6c6; border-radius: 7px; background: #fff5f5; }
+.delete-warning > svg { flex: 0 0 auto; color: var(--danger); }
+.delete-warning strong { display: block; color: #7e2929; font-size: 13px; }
+.delete-warning p { margin: 7px 0 0; color: #6e4a4a; font-size: 11px; line-height: 1.7; }
+.delete-project-modal > footer { margin: 0; padding: 14px 22px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 9px; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 120; min-height: 44px; max-width: 440px; display: flex; align-items: center; gap: 9px; background: #152a45; color: #fff; padding: 11px 15px; border-radius: 7px; box-shadow: 0 12px 30px rgba(12, 28, 48, .22); font-size: 12px; }
 .loading-screen { height: 100vh; display: flex; gap: 12px; align-items: center; justify-content: center; color: #4c5c70; }.spin { animation: spin .9s linear infinite; }@keyframes spin { to { transform: rotate(360deg); } }
 
