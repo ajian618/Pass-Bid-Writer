@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .blueprints import build_blueprint
-from .case_library import list_cases
+from .case_library import get_case, list_cases, update_case
 from .config import ensure_storage_dirs, get_settings
 from .drawings import update_drawing_asset
 from .knowledge import attach_standard_file
@@ -29,6 +29,7 @@ from .production import (
     _save_run_state,
     get_run_state,
     prepare_production_project,
+    update_task_spec,
 )
 from .reports import export_production_reports
 from .workflow import (
@@ -95,6 +96,33 @@ class ModelConfigRequest(BaseModel):
     glm_vision_model: str | None = None
 
 
+class CaseUpdateRequest(BaseModel):
+    title: str | None = None
+    project_type: str | None = None
+    region: str | None = None
+    tags: str | None = None
+    outline: list[dict[str, Any]] | None = None
+    scene_terms: list[str] | None = None
+    reusable_snippets: list[dict[str, str]] | None = None
+    style_notes: list[str] | None = None
+    enabled: bool | None = None
+    review_status: str | None = None
+    review_notes: str | None = None
+
+
+class TaskSpecSectionRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=120)
+    purpose: str = Field(default="", max_length=1000)
+    required_inputs: list[str] = Field(default_factory=list)
+    components: list[str] = Field(default_factory=list)
+    acceptance: list[str] = Field(default_factory=list)
+
+
+class TaskSpecUpdateRequest(BaseModel):
+    sections: list[TaskSpecSectionRequest] = Field(min_length=1, max_length=30)
+    revision_note: str = Field(default="", max_length=2000)
+
+
 OFFICIAL_HOST_SUFFIXES = (
     ".gov.cn",
     "gov.cn",
@@ -109,7 +137,7 @@ def create_app() -> FastAPI:
     ensure_storage_dirs(settings)
     db.init_db(settings.database_path)
     recover_interrupted_jobs()
-    app = FastAPI(title="施工组织设计生成台", version="1.0.0")
+    app = FastAPI(title="施工组织设计生成台", version="1.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -122,7 +150,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "data_dir": str(settings.data_dir),
             "models": ModelRouter().status(),
         }
@@ -134,6 +162,20 @@ def create_app() -> FastAPI:
     @app.get("/api/cases")
     def cases() -> list[dict[str, Any]]:
         return list_cases()
+
+    @app.get("/api/cases/{case_id}")
+    def case_detail(case_id: int) -> dict[str, Any]:
+        try:
+            return get_case(case_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.patch("/api/cases/{case_id}")
+    def edit_case(case_id: int, request: CaseUpdateRequest) -> dict[str, Any]:
+        try:
+            return update_case(case_id, request.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/config")
     def model_config() -> dict[str, Any]:
@@ -314,6 +356,25 @@ def create_app() -> FastAPI:
         if not request.confirmed:
             raise HTTPException(status_code=400, detail="任务书未确认")
         return _queue_action(run_id, "confirm_task_spec", background_tasks)
+
+    @app.post("/api/runs/{run_id}/suggest-task-spec", status_code=202)
+    def suggest_task(run_id: int, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        return _queue_action(run_id, "suggest_task_spec", background_tasks)
+
+    @app.put("/api/runs/{run_id}/task-spec")
+    def save_task_spec(
+        run_id: int,
+        request: TaskSpecUpdateRequest,
+    ) -> dict[str, Any]:
+        try:
+            state = update_task_spec(
+                run_id,
+                [item.model_dump() for item in request.sections],
+                revision_note=request.revision_note,
+            )
+            return _with_workflow(state)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runs/{run_id}/chapters/{section_code}/generate", status_code=202)
     def generate_chapter(

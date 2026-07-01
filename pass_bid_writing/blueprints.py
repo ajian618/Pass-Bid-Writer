@@ -152,28 +152,73 @@ PROJECT_MODULES: dict[str, list[dict[str, Any]]] = {
 }
 
 
+COMPACT_SECTION_GROUPS: list[dict[str, Any]] = [
+    {"code": "01", "title": "编制说明及工程概况", "members": ["01", "02"]},
+    {"code": "02", "title": "施工总体部署及总平面布置", "members": ["03", "04"]},
+    {"code": "03", "title": "施工进度计划及保证措施", "members": ["05"]},
+    {"code": "04", "title": "主要施工方案与关键技术措施", "members": ["06", "13", "14"]},
+    {"code": "05", "title": "质量管理体系与材料试验管理", "members": ["07", "12"]},
+    {"code": "06", "title": "安全文明施工、环境保护与应急措施", "members": ["08", "09"]},
+    {"code": "07", "title": "项目人员、劳动力、机械设备与仪器配置", "members": ["10", "11"]},
+    {"code": "08", "title": "资料管理、验收配合及招标附件", "members": ["15"]},
+]
+
+
 def build_blueprint(project_type: str = "水利工程通用") -> dict[str, Any]:
-    sections = deepcopy(BASE_BLUEPRINT)
+    reference_sections = deepcopy(BASE_BLUEPRINT)
     matched_modules: list[dict[str, Any]] = []
     for key, modules in PROJECT_MODULES.items():
         if key in project_type:
             matched_modules.extend(deepcopy(modules))
     if matched_modules:
-        method_section = next(section for section in sections if section["code"] == "06")
+        method_section = next(section for section in reference_sections if section["code"] == "06")
         method_section["special_modules"] = matched_modules
         method_section["components"].extend(module["title"] for module in matched_modules)
+    by_code = {section["code"]: section for section in reference_sections}
+    sections: list[dict[str, Any]] = []
+    for group in COMPACT_SECTION_GROUPS:
+        members = [by_code[code] for code in group["members"]]
+        sections.append(
+            {
+                "code": group["code"],
+                "title": group["title"],
+                "purpose": "；".join(item["purpose"].rstrip("。") for item in members) + "。",
+                "required_inputs": _unique(
+                    value for item in members for value in item["required_inputs"]
+                ),
+                "components": _unique(
+                    value for item in members for value in item["components"]
+                ),
+                "acceptance": _unique(
+                    value for item in members for value in item["acceptance"]
+                ),
+                "special_modules": [
+                    value
+                    for item in members
+                    for value in item.get("special_modules", [])
+                ],
+                "reference_member_codes": list(group["members"]),
+            }
+        )
     return {
         "id": "water-conservancy-v1",
         "title": "水利工程施工组织设计标准蓝图",
-        "version": "1.0",
+        "version": "1.1",
         "status": "controlled",
         "project_type": project_type,
         "sections": sections,
+        "reference_sections": reference_sections,
+        "default_section_strategy": "company_compact_8",
         "rules": [
             "招标文件和补遗优先确定响应范围与格式。",
             "项目数字必须来自项目事实或人工确认。",
             "规范条款必须来自已取得并验证的标准原文。",
             "历史案例仅提供结构、表达和资产模板。",
             "无法核验的信息必须进入人工确认清单。",
+            "章节数量不固定，8章为公司常用起点，人工确认后的任务书为唯一生产目录。",
         ],
     }
+
+
+def _unique(values: Any) -> list[Any]:
+    return list(dict.fromkeys(values))

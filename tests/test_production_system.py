@@ -21,6 +21,8 @@ from pass_bid_writing.production import (
     get_run_state,
     prepare_production_project,
     _sanitize_unsupported_claims,
+    suggest_task_spec,
+    update_task_spec,
 )
 from pass_bid_writing.visual_sources import _render_dxf_preview, analyze_visual_sources
 from pass_bid_writing.knowledge import attach_standard_file
@@ -73,8 +75,9 @@ class ProductionSystemTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "pending_download" for item in state["standards"]))
         self.assertGreaterEqual(len(state["facts"]), 3)
         self.assertEqual(state["blueprint"]["title"], "水利工程施工组织设计标准蓝图")
-        self.assertEqual(len(state["sections"]), 15)
-        self.assertTrue(any("河道疏浚" in item for item in state["sections"][5]["components"]))
+        self.assertEqual(len(state["sections"]), 8)
+        self.assertEqual(len(state["blueprint"]["reference_sections"]), 15)
+        self.assertTrue(any("河道疏浚" in item for item in state["sections"][3]["components"]))
         self.assertTrue(any(item["category"] == "规范待下载" for item in state["confirmations"]))
 
         expected_reports = {
@@ -102,6 +105,86 @@ class ProductionSystemTests(unittest.TestCase):
         self.assertEqual(confirmed["status"], "ready_for_generation")
         reloaded = get_run_state(state["run_id"])
         self.assertEqual(reloaded["stage"], "章节生成")
+
+    def test_human_task_spec_revision_controls_final_chapter_list(self) -> None:
+        (self.project / "招标文件.txt").write_text(
+            "河道治理工程施工组织设计采用通过制，必须提供进度、质量、安全和主要施工方案。",
+            encoding="utf-8",
+        )
+        state = prepare_production_project(str(self.project), project_type="河道治理工程")
+        confirm_file_roles(state["run_id"])
+        edited = update_task_spec(
+            state["run_id"],
+            [
+                {
+                    "title": "工程概况与总体部署",
+                    "purpose": "建立项目基线并说明施工部署。",
+                    "required_inputs": ["招标文件", "初步设计"],
+                    "components": ["工程概况", "施工部署"],
+                    "acceptance": ["项目事实可追溯"],
+                },
+                {
+                    "title": "施工进度与资源配置",
+                    "purpose": "形成进度和资源匹配方案。",
+                    "required_inputs": ["总工期", "工程量"],
+                    "components": ["进度计划", "资源计划"],
+                    "acceptance": ["工期有依据", "资源与进度匹配"],
+                },
+                {
+                    "title": "施工方案及质量安全措施",
+                    "purpose": "覆盖工法、质量和安全控制。",
+                    "required_inputs": ["设计图纸", "施工规范"],
+                    "components": ["主要施工方案", "质量措施", "安全措施"],
+                    "acceptance": ["招标要求全部有落点"],
+                },
+            ],
+            revision_note="按公司三章测试目录人工修订",
+        )
+        self.assertEqual([item["code"] for item in edited["sections"]], ["01", "02", "03"])
+        self.assertEqual(len(edited["sections"]), 3)
+        self.assertEqual(edited["task_spec_source"], "human_edited")
+        confirmed = confirm_task_spec(state["run_id"])
+        self.assertEqual(len(confirmed["sections"]), 3)
+        with db.db_session(self.storage / "pass_bid_writing.db") as conn:
+            rows = conn.execute(
+                "SELECT section_code, title FROM section_tasks WHERE production_run_id = ? ORDER BY section_code",
+                (state["run_id"],),
+            ).fetchall()
+        self.assertEqual([row["section_code"] for row in rows], ["01", "02", "03"])
+
+    def test_deepseek_suggestion_is_not_bound_to_a_fixed_chapter_count(self) -> None:
+        (self.project / "招标文件.txt").write_text(
+            "泵站工程施工组织设计采用通过制，要求进度、质量、安全、机电安装和调试。",
+            encoding="utf-8",
+        )
+        state = prepare_production_project(str(self.project), project_type="泵站工程")
+        confirm_file_roles(state["run_id"])
+        previous_key = os.environ.get("DEEPSEEK_API_KEY")
+        os.environ["DEEPSEEK_API_KEY"] = "test-key"
+        try:
+            with patch(
+                "pass_bid_writing.production.ModelRouter.complete_json",
+                return_value={
+                    "sections": [
+                        {"title": "编制说明及工程概况"},
+                        {"title": "施工总体部署"},
+                        {"title": "施工进度与资源配置"},
+                        {"title": "泵站主体及机电安装施工方案"},
+                        {"title": "质量安全文明施工措施"},
+                        {"title": "验收、资料与附件"},
+                    ],
+                    "rationale": "根据泵站专业和招标响应项合并为六章。",
+                },
+            ):
+                suggested = suggest_task_spec(state["run_id"])
+        finally:
+            if previous_key is None:
+                os.environ.pop("DEEPSEEK_API_KEY", None)
+            else:
+                os.environ["DEEPSEEK_API_KEY"] = previous_key
+        self.assertEqual(len(suggested["sections"]), 6)
+        self.assertEqual(suggested["task_spec_source"], "deepseek_evidence_and_case_match")
+        self.assertIn("六章", suggested["task_spec_rationale"])
 
     def test_standard_extraction_keeps_source_page_and_official_queue(self) -> None:
         standards = extract_standards(

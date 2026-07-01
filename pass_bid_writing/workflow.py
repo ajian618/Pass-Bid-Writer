@@ -17,6 +17,7 @@ from .production import (
     mark_generation_failed,
     prepare_production_project,
     review_production_draft,
+    suggest_task_spec,
 )
 from .reports import export_production_reports
 from .visual_sources import analyze_visual_sources
@@ -27,6 +28,7 @@ ACTION_LABELS = {
     "confirm_file_roles": "确认文件角色",
     "analyze_visuals": "提取视觉证据",
     "confirm_task_spec": "确认编制任务书",
+    "suggest_task_spec": "根据资料与案例生成建议任务书",
     "generate_chapter": "生成章节正文",
     "revise_chapter": "按要求重写章节",
     "assemble": "装配DOCX和交付文件",
@@ -221,6 +223,8 @@ def _execute_action(
         state = analyze_visual_sources(run_id)
     elif action == "confirm_task_spec":
         state = confirm_task_spec(run_id)
+    elif action == "suggest_task_spec":
+        state = suggest_task_spec(run_id)
     elif action in {"generate_chapter", "revise_chapter"}:
         state = generate_production_section(
             run_id,

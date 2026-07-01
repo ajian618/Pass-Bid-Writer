@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Archive,
   ArrowClockwise,
+  ArrowDown,
+  ArrowUp,
   BookOpenText,
   Buildings,
   CheckCircle,
@@ -11,6 +13,7 @@ import {
   FilePdf,
   FileText,
   FolderOpen,
+  FloppyDisk,
   Gauge,
   Gear,
   ImageSquare,
@@ -20,6 +23,7 @@ import {
   Plus,
   ShieldCheck,
   SquaresFour,
+  Trash,
   UploadSimple,
   Warning,
   X,
@@ -83,6 +87,9 @@ const STATUS = {
   empty: ["未导入", "neutral"],
   not_started: ["未开始", "neutral"],
   duplicate: ["重复文件", "neutral"],
+  pending_review: ["待审核", "warning"],
+  needs_correction: ["需纠正", "danger"],
+  disabled: ["已停用", "neutral"],
 };
 
 async function api(path, options = {}) {
@@ -418,16 +425,118 @@ function Drawings({ data, setData, notify }) {
   );
 }
 
-function Blueprint({ data, onCase, cases }) {
-  return <div className="workspace-view"><div className="view-heading"><div><h2>{data.blueprint?.title || "水利工程施工组织设计标准蓝图"}</h2><p>蓝图定义成品应该包含什么；历史案例只复用结构、表达和版式。</p></div><button className="button secondary" onClick={onCase}><UploadSimple size={18} />导入已通过案例</button></div>
-    {!!cases.length && <section className="panel case-strip"><strong>案例库</strong>{cases.slice(0, 5).map((c) => <span key={c.id}>{c.title}</span>)}</section>}
-    <div className="blueprint-grid">{(data.sections || []).map((s) => <article className="blueprint-section" key={s.code}><span>{s.code}</span><div><h3>{s.title}</h3><p>{s.purpose}</p><small>交付项：{s.components?.join("、")}</small></div></article>)}</div></div>;
+function Blueprint({ data, onCase, cases, refreshCases, notify }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [tab, setTab] = useState("outline");
+  useEffect(() => {
+    if (!selectedId && cases.length) setSelectedId(cases[0].id);
+    if (selectedId && !cases.some((item) => item.id === selectedId)) setSelectedId(cases[0]?.id || null);
+  }, [cases, selectedId]);
+  useEffect(() => {
+    if (!selectedId) { setDetail(null); setDraft(null); return; }
+    api(`/api/cases/${selectedId}`).then((item) => { setDetail(item); setDraft(item); }).catch((e) => notify(e.message, true));
+  }, [selectedId]);
+  const update = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        title: draft.title, project_type: draft.project_type, region: draft.region, tags: draft.tags,
+        outline: draft.outline, scene_terms: draft.scene_terms, reusable_snippets: draft.reusable_snippets,
+        style_notes: draft.style_notes, enabled: draft.enabled, review_status: draft.review_status,
+        review_notes: draft.review_notes,
+      };
+      const saved = await api(`/api/cases/${selectedId}`, { method: "PATCH", body: JSON.stringify(payload) });
+      setDetail(saved); setDraft(saved); await refreshCases(); notify("案例熔炼结果已保存");
+    } catch (e) { notify(e.message, true); } finally { setSaving(false); }
+  };
+  const moveOutline = (index, direction) => {
+    const next = [...draft.outline]; const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    update("outline", next.map((item, order) => ({ ...item, order: order + 1 })));
+  };
+  const updateOutline = (index, patch) => update("outline", draft.outline.map((item, i) => i === index ? { ...item, ...patch } : item));
+  const updateSnippet = (index, patch) => update("reusable_snippets", draft.reusable_snippets.map((item, i) => i === index ? { ...item, ...patch } : item));
+  return <div className="workspace-view"><div className="view-heading"><div><h2>{data.blueprint?.title || "水利工程施工组织设计标准蓝图"}</h2><p>案例库是可审核的公司资产：看清模型熔炼了什么，修正后再决定是否参与新项目。</p></div><button className="button secondary" onClick={onCase}><UploadSimple size={18} />导入已通过案例</button></div>
+    {!cases.length ? <div className="empty-page compact-empty"><BookOpenText size={42} /><h2>案例库尚为空</h2><p>导入“招标文件 + 已通过技术标”后，可在这里审核目录、措辞和版式规律。</p></div> :
+    <div className="case-library-layout">
+      <section className="panel case-library-list"><div className="panel-heading"><div><h2>案例库</h2><span>{cases.length} 个案例</span></div></div>
+        {cases.map((item) => <button key={item.id} className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)}>
+          <BookOpenText size={19} /><div><strong>{item.title}</strong><small>{item.project_type || "未标注类型"} · {item.outline_count} 项目录 · {item.snippet_count} 条措辞</small></div><StatusPill value={item.enabled ? item.review_status : "disabled"} />
+        </button>)}
+      </section>
+      <section className="panel case-library-detail">
+        {!draft ? <div className="empty-state"><ArrowClockwise className="spin" /><p>读取案例资产…</p></div> : <>
+          <div className="case-detail-header"><div><h2>{draft.title}</h2><p>来源技术标：{draft.bid_path}</p></div><div className="heading-actions"><button className="button secondary" onClick={() => update("enabled", !draft.enabled)}>{draft.enabled ? "停用匹配" : "启用匹配"}</button><button className="button primary" disabled={saving} onClick={save}><FloppyDisk size={18} />{saving ? "保存中…" : "保存审核结果"}</button></div></div>
+          <div className="case-policy"><ShieldCheck size={19} /><div><strong>允许复用：</strong>章节结构、通用表达和版式规律。<strong>禁止复用：</strong>历史项目数字、人员、机械、日期及工程量。</div></div>
+          <div className="case-meta-grid">
+            <label>案例名称<input value={draft.title || ""} onChange={(e) => update("title", e.target.value)} /></label>
+            <label>工程类型<input value={draft.project_type || ""} onChange={(e) => update("project_type", e.target.value)} /></label>
+            <label>地区<input value={draft.region || ""} onChange={(e) => update("region", e.target.value)} /></label>
+            <label>标签<input value={draft.tags || ""} onChange={(e) => update("tags", e.target.value)} /></label>
+            <label>审核状态<select value={draft.review_status || "pending_review"} onChange={(e) => update("review_status", e.target.value)}><option value="pending_review">待审核</option><option value="confirmed">已确认</option><option value="needs_correction">需纠正</option></select></label>
+            <label>版式识别<input readOnly value={draft.layout_status || (draft.layout_profile_id ? "已建立版式配置" : "未取得")} /></label>
+          </div>
+          <div className="case-tabs"><button className={tab === "outline" ? "active" : ""} onClick={() => setTab("outline")}>目录结构 <span>{draft.outline?.length || 0}</span></button><button className={tab === "patterns" ? "active" : ""} onClick={() => setTab("patterns")}>写作规律</button><button className={tab === "snippets" ? "active" : ""} onClick={() => setTab("snippets")}>可复用措辞 <span>{draft.reusable_snippets?.length || 0}</span></button><button className={tab === "review" ? "active" : ""} onClick={() => setTab("review")}>审核备注</button></div>
+          {tab === "outline" && <div className="case-outline-editor">
+            {draft.outline.map((item, index) => <div key={`${index}-${item.title}`}><span>{index + 1}</span><select aria-label={`目录第${index + 1}项层级`} value={item.level || 1} onChange={(e) => updateOutline(index, { level: Number(e.target.value) })}>{[1,2,3,4,5,6].map((level) => <option key={level} value={level}>{level}级</option>)}</select><input aria-label={`目录第${index + 1}项名称`} value={item.title || ""} onChange={(e) => updateOutline(index, { title: e.target.value })} /><button aria-label={`上移目录第${index + 1}项`} className="icon-button" onClick={() => moveOutline(index, -1)}><ArrowUp /></button><button aria-label={`下移目录第${index + 1}项`} className="icon-button" onClick={() => moveOutline(index, 1)}><ArrowDown /></button><button aria-label={`删除目录第${index + 1}项`} className="icon-button danger-icon" onClick={() => update("outline", draft.outline.filter((_, i) => i !== index))}><Trash /></button></div>)}
+            <button className="text-button" onClick={() => update("outline", [...draft.outline, { level: 1, title: "新增章节", order: draft.outline.length + 1 }])}><Plus />添加目录项</button>
+          </div>}
+          {tab === "patterns" && <div className="case-pattern-editor"><label>识别到的水利施工场景（每行一项）<textarea value={(draft.scene_terms || []).join("\n")} onChange={(e) => update("scene_terms", e.target.value.split("\n").filter(Boolean))} /></label><label>公司成品写作规律（每行一项）<textarea value={(draft.style_notes || []).join("\n")} onChange={(e) => update("style_notes", e.target.value.split("\n").filter(Boolean))} /></label></div>}
+          {tab === "snippets" && <div className="case-snippet-editor">{draft.reusable_snippets.map((item, index) => <div key={index}><input aria-label={`措辞第${index + 1}项关键词`} value={item.keyword || ""} placeholder="适用关键词" onChange={(e) => updateSnippet(index, { keyword: e.target.value })} /><textarea aria-label={`措辞第${index + 1}项内容`} value={item.text || ""} onChange={(e) => updateSnippet(index, { text: e.target.value })} /><button aria-label={`删除措辞第${index + 1}项`} className="icon-button danger-icon" onClick={() => update("reusable_snippets", draft.reusable_snippets.filter((_, i) => i !== index))}><Trash /></button></div>)}<button className="text-button" onClick={() => update("reusable_snippets", [...draft.reusable_snippets, { keyword: "", text: "" }])}><Plus />添加可复用措辞</button></div>}
+          {tab === "review" && <div className="case-pattern-editor"><label>人工审核说明<textarea value={draft.review_notes || ""} onChange={(e) => update("review_notes", e.target.value)} placeholder="记录修正原因、适用边界或需要再次核验的内容。" /></label><div className="source-pair"><span>招标文件</span><p>{draft.tender_path}</p><span>已通过技术标</span><p>{draft.bid_path}</p></div></div>}
+        </>}
+      </section>
+    </div>}</div>;
 }
 
-function TaskSpec({ data, action, busy }) {
-  return <div className="workspace-view"><div className="view-heading"><div><h2>施组编制任务书</h2><p>确认目录、交付项、项目依据、编制依据和缺口后，才能进入正文生产。</p></div>
-    <button className="button primary" disabled={busy || !["awaiting_confirmation", "visual_analysis_failed"].includes(data.status)} onClick={() => action("confirm-task-spec")}><CheckCircle size={18} />确认任务书</button></div>
-    <section className="panel task-table"><table><thead><tr><th>章节</th><th>完成标准</th><th>项目依据</th><th>编制依据</th><th>缺失输入</th></tr></thead><tbody>{(data.sections || []).map((s) => <tr key={s.code}><td><strong>{s.code} {s.title}</strong><small>{s.purpose}</small></td><td>{s.acceptance?.join("；")}</td><td>{s.project_basis?.length ? s.project_basis.join("；") : "尚无"}</td><td>{s.reference_basis?.join("；")}</td><td className={s.missing_inputs?.length ? "warning-text" : ""}>{s.missing_inputs?.length ? s.missing_inputs.join("；") : "完整"}</td></tr>)}</tbody></table></section></div>;
+function TaskSpec({ data, setData, action, busy, notify }) {
+  const [draft, setDraft] = useState([]);
+  const [selected, setSelected] = useState(0);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const editable = !["generating", "partial_draft", "ready_for_assembly", "draft_generated", "reviewed"].includes(data.status);
+  useEffect(() => {
+    setDraft((data.sections || []).map((item) => ({
+      title: item.title || "", purpose: item.purpose || "", required_inputs: item.required_inputs || [],
+      components: item.components || [], acceptance: item.acceptance || [],
+      project_basis: item.project_basis || [], reference_basis: item.reference_basis || [],
+      missing_inputs: item.missing_inputs || [],
+    })));
+    setSelected(0); setDirty(false);
+  }, [data.run_id, data.task_spec_revision]);
+  const current = draft[selected];
+  const patch = (changes) => { setDraft(draft.map((item, index) => index === selected ? { ...item, ...changes } : item)); setDirty(true); };
+  const move = (direction) => {
+    const target = selected + direction; if (target < 0 || target >= draft.length) return;
+    const next = [...draft]; [next[selected], next[target]] = [next[target], next[selected]];
+    setDraft(next); setSelected(target); setDirty(true);
+  };
+  const remove = () => {
+    if (draft.length <= 1) return notify("任务书至少保留一个章节", true);
+    setDraft(draft.filter((_, index) => index !== selected)); setSelected(Math.max(0, selected - 1)); setDirty(true);
+  };
+  const add = () => { setDraft([...draft, { title: "新增章节", purpose: "", required_inputs: [], components: ["正文说明"], acceptance: ["本章内容完整且依据可追溯"], project_basis: [], reference_basis: [], missing_inputs: [] }]); setSelected(draft.length); setDirty(true); };
+  const save = async () => {
+    setSaving(true);
+    try {
+      const state = await api(`/api/runs/${data.run_id}/task-spec`, { method: "PUT", body: JSON.stringify({ sections: draft.map(({ title, purpose, required_inputs, components, acceptance }) => ({ title, purpose, required_inputs, components, acceptance })), revision_note: "工作台人工修订" }) });
+      setData(state); setDirty(false); notify("任务书修改已保存，依据与缺口已重新匹配");
+    } catch (e) { notify(e.message, true); } finally { setSaving(false); }
+  };
+  return <div className="workspace-view"><div className="view-heading"><div><h2>施组编制任务书</h2><p>当前 {draft.length} 章，可按真实项目增删、改名和排序；保存后系统重新匹配招标要求、项目依据和案例资产。</p></div><div className="heading-actions"><button className="button secondary" disabled={busy || !editable || dirty} onClick={() => action("suggest-task-spec")}><ArrowClockwise size={18} />按资料与案例重新建议</button><button className="button secondary" disabled={!dirty || saving || !editable} onClick={save}><FloppyDisk size={18} />{saving ? "保存中…" : "保存修改"}</button><button className="button primary" disabled={busy || dirty || !editable || !["awaiting_confirmation", "visual_analysis_failed"].includes(data.status)} onClick={() => action("confirm-task-spec")}><CheckCircle size={18} />确认最终任务书</button></div></div>
+    <section className="task-spec-summary"><div><strong>建议来源</strong><span>{({ company_compact_blueprint: "公司常用8章蓝图", matched_case_outline: "已启用案例目录", deepseek_evidence_and_case_match: "DeepSeek资料与案例匹配", human_edited: "人工修订" })[data.task_spec_source] || data.task_spec_source || "受控蓝图"}</span></div><div><strong>当前版本</strong><span>第 {data.task_spec_revision || 1} 版 · {data.task_spec_confirmed_at ? "已确认" : "待确认"}</span></div><p>{data.task_spec_rationale || "任务书需人工确认后才会进入正文生产。"}</p></section>
+    <div className="task-spec-layout">
+      <section className="panel task-section-list"><div className="panel-heading"><div><h2>一级章节</h2><span>{draft.length} 章</span></div><button aria-label="新增章节" className="icon-button" disabled={!editable} onClick={add}><Plus /></button></div>{draft.map((item, index) => <button key={`${index}-${item.title}`} className={selected === index ? "active" : ""} onClick={() => setSelected(index)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.title}</strong><small>{item.components.length} 个交付项 · {item.missing_inputs.length} 项缺口</small></div></button>)}</section>
+      <section className="panel task-section-editor">{current && <><div className="panel-heading"><div><h2>{String(selected + 1).padStart(2, "0")} 章节定义</h2><span>这里的内容将直接控制DeepSeek写什么、交付什么</span></div><div className="inline-icons"><button aria-label="上移当前章节" className="icon-button" disabled={!editable} onClick={() => move(-1)}><ArrowUp /></button><button aria-label="下移当前章节" className="icon-button" disabled={!editable} onClick={() => move(1)}><ArrowDown /></button><button aria-label="删除当前章节" className="icon-button danger-icon" disabled={!editable} onClick={remove}><Trash /></button></div></div>
+        <div className="task-editor-fields"><label>章节名称<input disabled={!editable} value={current.title} onChange={(e) => patch({ title: e.target.value })} /></label><label>本章目的<textarea disabled={!editable} value={current.purpose} onChange={(e) => patch({ purpose: e.target.value })} /></label><div className="task-editor-columns"><label>所需输入（每行一项）<textarea disabled={!editable} value={current.required_inputs.join("\n")} onChange={(e) => patch({ required_inputs: e.target.value.split("\n").filter(Boolean) })} /></label><label>交付组件（每行一项）<textarea disabled={!editable} value={current.components.join("\n")} onChange={(e) => patch({ components: e.target.value.split("\n").filter(Boolean) })} /></label></div><label>完成标准（每行一项）<textarea disabled={!editable} value={current.acceptance.join("\n")} onChange={(e) => patch({ acceptance: e.target.value.split("\n").filter(Boolean) })} /></label></div>
+      </>}</section>
+      <section className="panel task-basis-preview"><div className="panel-heading"><div><h2>匹配结果</h2><span>保存后刷新</span></div></div><h3>项目依据</h3>{current?.project_basis?.length ? current.project_basis.map((item) => <p key={item}>{item}</p>) : <p className="missing">尚无项目依据</p>}<h3>编制依据</h3>{current?.reference_basis?.map((item) => <p key={item}>{item}</p>)}<h3>缺失输入</h3>{current?.missing_inputs?.length ? current.missing_inputs.map((item) => <p className="missing" key={item}>{item}</p>) : <p>当前未识别到缺口</p>}</section>
+    </div></div>;
 }
 
 function Chapters({ data, action, busy }) {
@@ -547,6 +656,7 @@ export default function App() {
       const routes = {
         "confirm-file-roles": [`/api/runs/${runId}/confirm-file-roles`, {}],
         "analyze-visuals": [`/api/runs/${runId}/analyze-visuals`, {}],
+        "suggest-task-spec": [`/api/runs/${runId}/suggest-task-spec`, {}],
         "confirm-task-spec": [`/api/runs/${runId}/confirm-task-spec`, { confirmed: true }],
         generate: [`/api/runs/${runId}/chapters/${payload.section_code}/generate`, {}],
         revise: [`/api/runs/${runId}/chapters/${payload.section_code}/revise`, { instruction: payload.instruction }],
@@ -572,8 +682,8 @@ export default function App() {
   if (active === "overview") view = <Overview data={data} onNavigate={setActive} action={runAction} />;
   if (active === "sources") view = <Sources data={data} setData={setData} action={runAction} busy={busy} notify={notify} />;
   if (active === "drawings") view = <Drawings data={data} setData={setData} notify={notify} />;
-  if (active === "blueprint") view = <Blueprint data={data} onCase={() => setModal("case")} cases={cases} />;
-  if (active === "task") view = <TaskSpec data={data} action={runAction} busy={busy} />;
+  if (active === "blueprint") view = <Blueprint data={data} onCase={() => setModal("case")} cases={cases} refreshCases={refreshLists} notify={notify} />;
+  if (active === "task") view = <TaskSpec data={data} setData={setData} action={runAction} busy={busy} notify={notify} />;
   if (active === "chapters") view = <Chapters data={data} action={runAction} busy={busy} />;
   if (active === "review") view = <Review data={data} setData={setData} action={runAction} busy={busy} />;
   if (active === "delivery") view = <Delivery data={data} action={runAction} busy={busy} />;

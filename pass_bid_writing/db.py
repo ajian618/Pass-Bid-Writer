@@ -67,6 +67,9 @@ def init_db(database_path: Path) -> None:
                 project_type TEXT NOT NULL DEFAULT '',
                 region TEXT NOT NULL DEFAULT '浙江',
                 tags TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                review_status TEXT NOT NULL DEFAULT 'pending_review',
+                review_notes TEXT NOT NULL DEFAULT '',
                 tender_path TEXT NOT NULL,
                 bid_path TEXT NOT NULL,
                 tender_text TEXT NOT NULL,
@@ -363,6 +366,19 @@ def init_db(database_path: Path) -> None:
         )
         _add_column_if_missing(conn, "case_pairs", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "case_pairs", "layout_profile_id", "layout_profile_id INTEGER")
+        _add_column_if_missing(conn, "case_pairs", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(
+            conn,
+            "case_pairs",
+            "review_status",
+            "review_status TEXT NOT NULL DEFAULT 'pending_review'",
+        )
+        _add_column_if_missing(
+            conn,
+            "case_pairs",
+            "review_notes",
+            "review_notes TEXT NOT NULL DEFAULT ''",
+        )
         _add_column_if_missing(conn, "drafts", "project_dir", "project_dir TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "drafts", "layout_profile_id", "layout_profile_id INTEGER")
         _add_column_if_missing(conn, "drafts", "visual_report_json", "visual_report_json TEXT NOT NULL DEFAULT '{}'")
@@ -562,9 +578,12 @@ def search_case_pairs(
     query: str = "",
     project_type: str = "",
     limit: int = 5,
+    include_disabled: bool = False,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
+    if not include_disabled:
+        clauses.append("enabled = 1")
     if query.strip():
         like = f"%{query.strip()}%"
         clauses.append(
@@ -580,6 +599,45 @@ def search_case_pairs(
         (*params, int(limit)),
     ).fetchall()
     return [row_to_dict(row) for row in rows if row is not None]
+
+
+def update_case_pair(
+    conn: sqlite3.Connection,
+    case_id: int,
+    *,
+    title: str,
+    project_type: str,
+    region: str,
+    tags: str,
+    outline: list[dict[str, Any]],
+    patterns: dict[str, Any],
+    enabled: bool,
+    review_status: str,
+    review_notes: str,
+) -> dict[str, Any] | None:
+    conn.execute(
+        """
+        UPDATE case_pairs
+        SET title = ?, project_type = ?, region = ?, tags = ?,
+            outline_json = ?, patterns_json = ?, enabled = ?,
+            review_status = ?, review_notes = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            title,
+            project_type,
+            region,
+            tags,
+            _json_dump(outline),
+            _json_dump(patterns),
+            1 if enabled else 0,
+            review_status,
+            review_notes,
+            utc_now(),
+            case_id,
+        ),
+    )
+    return get_case_pair(conn, case_id)
 
 
 def create_lesson(

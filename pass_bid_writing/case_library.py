@@ -125,4 +125,136 @@ def list_cases(limit: int = 100) -> list[dict[str, Any]]:
     settings = get_settings()
     db.init_db(settings.database_path)
     with db.db_session(settings.database_path) as conn:
-        return db.search_case_pairs(conn, limit=limit)
+        cases = db.search_case_pairs(conn, limit=limit, include_disabled=True)
+    return [_case_summary(case) for case in cases]
+
+
+def get_case(case_id: int) -> dict[str, Any]:
+    settings = get_settings()
+    db.init_db(settings.database_path)
+    with db.db_session(settings.database_path) as conn:
+        case = db.get_case_pair(conn, case_id)
+    if case is None:
+        raise ValueError(f"case not found: {case_id}")
+    return _case_detail(case)
+
+
+def update_case(case_id: int, changes: dict[str, Any]) -> dict[str, Any]:
+    current = get_case(case_id)
+    review_status = str(changes.get("review_status", current["review_status"]))
+    if review_status not in {"pending_review", "confirmed", "needs_correction"}:
+        raise ValueError("不支持的案例审核状态")
+    outline = _normalize_outline(changes.get("outline", current["outline"]))
+    scene_terms = _string_list(changes.get("scene_terms", current["scene_terms"]), limit=80)
+    style_notes = _string_list(changes.get("style_notes", current["style_notes"]), limit=30)
+    snippets = _normalize_snippets(
+        changes.get("reusable_snippets", current["reusable_snippets"])
+    )
+    patterns = dict(current.get("patterns", {}))
+    patterns.update(
+        {
+            "outline": outline,
+            "scene_terms": scene_terms,
+            "style_notes": style_notes,
+            "reusable_snippets": snippets,
+        }
+    )
+    settings = get_settings()
+    with db.db_session(settings.database_path) as conn:
+        saved = db.update_case_pair(
+            conn,
+            case_id,
+            title=str(changes.get("title", current["title"])).strip() or current["title"],
+            project_type=str(changes.get("project_type", current["project_type"])).strip(),
+            region=str(changes.get("region", current["region"])).strip(),
+            tags=str(changes.get("tags", current["tags"])).strip(),
+            outline=outline,
+            patterns=patterns,
+            enabled=bool(changes.get("enabled", current["enabled"])),
+            review_status=review_status,
+            review_notes=str(changes.get("review_notes", current["review_notes"])).strip(),
+        )
+    if saved is None:
+        raise ValueError(f"case not found: {case_id}")
+    return _case_detail(saved)
+
+
+def _case_summary(case: dict[str, Any]) -> dict[str, Any]:
+    patterns = case.get("patterns", {}) or {}
+    outline = patterns.get("outline") or case.get("outline") or []
+    return {
+        "id": int(case["id"]),
+        "title": case.get("title", ""),
+        "project_type": case.get("project_type", ""),
+        "region": case.get("region", ""),
+        "tags": case.get("tags", ""),
+        "enabled": bool(case.get("enabled", 1)),
+        "review_status": case.get("review_status", "pending_review"),
+        "review_notes": case.get("review_notes", ""),
+        "outline_count": len(outline),
+        "scene_term_count": len(patterns.get("scene_terms", [])),
+        "snippet_count": len(patterns.get("reusable_snippets", [])),
+        "style_note_count": len(patterns.get("style_notes", [])),
+        "layout_status": patterns.get("layout_status", ""),
+        "updated_at": case.get("updated_at", ""),
+    }
+
+
+def _case_detail(case: dict[str, Any]) -> dict[str, Any]:
+    patterns = case.get("patterns", {}) or {}
+    outline = patterns.get("outline") or case.get("outline") or []
+    return {
+        **_case_summary(case),
+        "project_dir": case.get("project_dir", ""),
+        "tender_path": case.get("tender_path", ""),
+        "bid_path": case.get("bid_path", ""),
+        "layout_profile_id": case.get("layout_profile_id"),
+        "outline": outline,
+        "scene_terms": patterns.get("scene_terms", []),
+        "reusable_snippets": patterns.get("reusable_snippets", []),
+        "style_notes": patterns.get("style_notes", []),
+        "patterns": patterns,
+        "requirements": case.get("requirements", {}),
+        "created_at": case.get("created_at", ""),
+    }
+
+
+def _normalize_outline(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(value if isinstance(value, list) else [], start=1):
+        if isinstance(item, str):
+            title = item.strip()
+            level = 1
+        elif isinstance(item, dict):
+            title = str(item.get("title", "")).strip()
+            level = max(1, min(6, int(item.get("level", 1) or 1)))
+        else:
+            continue
+        if title:
+            result.append({"level": level, "title": title, "order": index})
+    if not result:
+        raise ValueError("案例目录至少保留一个有效章节")
+    return result[:200]
+
+
+def _string_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text)
+    return result[:limit]
+
+
+def _normalize_snippets(value: Any) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        keyword = str(item.get("keyword", "")).strip() or "案例措辞"
+        text = str(item.get("text", "")).strip()
+        if text:
+            result.append({"keyword": keyword[:80], "text": text[:2000]})
+    return result[:50]

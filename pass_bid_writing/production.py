@@ -169,17 +169,22 @@ def _map_standard_sections(standards: list[dict[str, Any]], sections: list[dict[
         blob = f"{standard.get('code', '')} {standard.get('title', '')}"
         affected: list[str] = []
         keyword_map = [
-            (("质量", "验收", "检验"), "质量管理体系与保证措施"),
-            (("安全", "施工现场", "临时用电"), "安全生产、文明施工与应急措施"),
-            (("水土保持", "环境"), "环境保护与水土保持"),
-            (("土方", "堤防", "水利水电"), "主要施工方法与技术措施"),
+            (("质量", "验收", "检验"), ("质量", "材料", "试验")),
+            (("安全", "施工现场", "临时用电"), ("安全", "文明", "应急")),
+            (("水土保持", "环境"), ("环境", "水土保持")),
+            (("土方", "堤防", "水利水电"), ("施工方案", "施工方法", "技术")),
         ]
-        for keywords, title in keyword_map:
+        for keywords, section_keywords in keyword_map:
             if any(keyword in blob for keyword in keywords):
-                affected.append(title)
+                matching = [
+                    section["title"]
+                    for section in sections
+                    if any(keyword in section["title"] for keyword in section_keywords)
+                ]
+                affected.extend(matching[:2])
         if not affected:
-            affected = [section["title"] for section in sections if section["code"] in {"01", "06", "07"}]
-        standard["affected_sections"] = affected
+            affected = [section["title"] for section in sections[:1]]
+        standard["affected_sections"] = list(dict.fromkeys(affected))
 
 
 def _build_sections(
@@ -455,6 +460,13 @@ def prepare_production_project(
             "needs_review": 0,
         },
         "sections": sections,
+        "task_spec_source": "company_compact_blueprint",
+        "task_spec_rationale": (
+            "先以公司常用的8章紧凑结构建立可编辑任务书；"
+            "完成资料与案例匹配后可重新生成建议目录，最终以人工确认版本为准。"
+        ),
+        "task_spec_revision": 1,
+        "task_spec_history": [],
         "confirmations": confirmations,
         "model_differences": [],
         "models": model_router.status(),
@@ -628,49 +640,7 @@ def _persist_run_entities(conn, run_id: int, state: dict[str, Any]) -> None:
             ),
         )
     for section in state["sections"]:
-        conn.execute(
-            """
-            INSERT INTO section_tasks
-            (production_run_id, section_code, title, purpose, status, completion,
-             requirements_json, inputs_json, acceptance_json, components_json, basis_json,
-             created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id, section["code"], section["title"], section["purpose"], section["status"],
-                section["completion"], _json(section["requirements"]), _json(section["required_inputs"]),
-                _json(section["acceptance"]), _json(section["components"]),
-                _json({"project": section["project_basis"], "reference": section["reference_basis"]}),
-                now, now,
-            ),
-        )
-        for index, component in enumerate(section.get("components", []), start=1):
-            conn.execute(
-                """
-                INSERT INTO content_components
-                (production_run_id, section_code, component_id, component_kind, title,
-                 required, status, source_path, basis_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    section["code"],
-                    f"{section['code']}-{index:02d}",
-                    _component_kind(component),
-                    component,
-                    1,
-                    "not_started",
-                    "",
-                    _json(
-                        {
-                            "project": section.get("project_basis", []),
-                            "reference": section.get("reference_basis", []),
-                        }
-                    ),
-                    now,
-                    now,
-                ),
-            )
+        _insert_section_entity(conn, run_id, section, now)
     for item in state["confirmations"]:
         conn.execute(
             """
@@ -682,6 +652,115 @@ def _persist_run_entities(conn, run_id: int, state: dict[str, Any]) -> None:
             (
                 run_id, item["category"], item["title"], item["detail"], item["severity"],
                 _json(item["affected_sections"]), item["status"], now, now,
+            ),
+        )
+
+
+def _replace_section_entities(
+    conn,
+    run_id: int,
+    sections: list[dict[str, Any]],
+) -> None:
+    conn.execute("DELETE FROM content_components WHERE production_run_id = ?", (run_id,))
+    conn.execute("DELETE FROM section_tasks WHERE production_run_id = ?", (run_id,))
+    now = _now()
+    for section in sections:
+        _insert_section_entity(conn, run_id, section, now)
+
+
+def _replace_case_asset_entities(
+    conn,
+    run_id: int,
+    assets: list[dict[str, Any]],
+) -> None:
+    conn.execute("DELETE FROM case_assets WHERE production_run_id = ?", (run_id,))
+    now = _now()
+    for asset in assets:
+        conn.execute(
+            """
+            INSERT INTO case_assets
+            (production_run_id, case_id, asset_key, asset_type, title, content_json,
+             applicable_sections_json, reuse_rule, source_path, layout_profile_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                asset["case_id"],
+                asset["asset_id"],
+                asset["asset_type"],
+                asset["title"],
+                _json(asset.get("content")),
+                _json(asset.get("applicable_sections", [])),
+                asset.get("reuse_rule", "structure_only"),
+                asset.get("source_path", ""),
+                asset.get("layout_profile_id"),
+                now,
+            ),
+        )
+
+
+def _insert_section_entity(
+    conn,
+    run_id: int,
+    section: dict[str, Any],
+    now: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO section_tasks
+        (production_run_id, section_code, title, purpose, status, completion,
+         requirements_json, inputs_json, acceptance_json, components_json, basis_json,
+         content_text, model, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            section["code"],
+            section["title"],
+            section["purpose"],
+            section["status"],
+            section["completion"],
+            _json(section["requirements"]),
+            _json(section["required_inputs"]),
+            _json(section["acceptance"]),
+            _json(section["components"]),
+            _json(
+                {
+                    "project": section["project_basis"],
+                    "reference": section["reference_basis"],
+                }
+            ),
+            section.get("content", ""),
+            section.get("model", ""),
+            now,
+            now,
+        ),
+    )
+    for index, component in enumerate(section.get("components", []), start=1):
+        conn.execute(
+            """
+            INSERT INTO content_components
+            (production_run_id, section_code, component_id, component_kind, title,
+             required, status, source_path, basis_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                section["code"],
+                f"{section['code']}-{index:02d}",
+                _component_kind(component),
+                component,
+                1,
+                "generated" if section.get("status") == "generated" else "not_started",
+                "",
+                _json(
+                    {
+                        "project": section.get("project_basis", []),
+                        "reference": section.get("reference_basis", []),
+                    }
+                ),
+                now,
+                now,
             ),
         )
 
@@ -766,6 +845,18 @@ def confirm_task_spec(run_id: int) -> dict[str, Any]:
         raise ValueError("必须先确认项目文件角色，避免以错误资料生成正文")
     if state.get("status") == "visual_analysis_pending":
         raise ValueError("必须先运行多模态资料分析；未配置视觉模型时系统会生成明确的人工核对项")
+    sections = state.get("sections", [])
+    if not sections:
+        raise ValueError("编制任务书至少需要一个章节")
+    invalid = [
+        section
+        for section in sections
+        if not str(section.get("title", "")).strip()
+        or not section.get("components")
+        or not section.get("acceptance")
+    ]
+    if invalid:
+        raise ValueError("每个章节都必须填写章节名称、交付组件和完成标准")
     blocking = [
         item
         for item in state.get("confirmations", [])
@@ -782,6 +873,7 @@ def confirm_task_spec(run_id: int) -> dict[str, Any]:
     state["stage_index"] = 7
     state["status"] = "ready_for_generation"
     state["task_spec_confirmed_at"] = _now()
+    state["task_spec_confirmed_revision"] = int(state.get("task_spec_revision", 1))
     settings = get_settings()
     with db.db_session(settings.database_path) as conn:
         conn.execute(
@@ -792,6 +884,353 @@ def confirm_task_spec(run_id: int) -> dict[str, Any]:
             (state["stage"], state["status"], _json(state), _now(), run_id),
         )
     return state
+
+
+def suggest_task_spec(run_id: int) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    _ensure_task_spec_editable(state)
+    blueprint = state.get("blueprint") or build_blueprint(
+        state.get("project", {}).get("project_type", "水利工程通用")
+    )
+    requirement_text = " ".join(
+        str(item.get("requirement", ""))
+        for item in state.get("requirements", {}).get("requirements", [])
+    )
+    state["case_assets"] = load_case_assets(
+        project_type=state.get("project", {}).get("project_type", ""),
+        requirement_text=requirement_text,
+    )
+    state["confirmations"] = [
+        item
+        for item in state.get("confirmations", [])
+        if item.get("category") != "案例资产缺失"
+    ]
+    if not state["case_assets"]:
+        state["confirmations"].append(
+            {
+                "category": "案例资产缺失",
+                "title": "当前没有已启用的公司已通过成品",
+                "detail": "建议目录将采用受控水利通用蓝图，停用案例不会参与匹配。",
+                "severity": "medium",
+                "affected_sections": ["全局"],
+                "status": "open",
+                "recommended_action": "在成品蓝图中审核并启用适用案例，或继续人工编辑任务书。",
+            }
+        )
+    settings = get_settings()
+    with db.db_session(settings.database_path) as conn:
+        _replace_case_asset_entities(conn, run_id, state.get("case_assets", []))
+    case_outlines = _case_outline_candidates(state.get("case_assets", []))
+    router = ModelRouter()
+    proposed: list[dict[str, Any]] = []
+    rationale = ""
+    source = "company_compact_blueprint"
+    if router.endpoints["text_master"].configured:
+        result = router.complete_json(
+            role="text_master",
+            system=(
+                "你是浙江水利工程通过制技术标的编制任务书规划器。"
+                "只规划一级章节和每章交付定义，不撰写正文，不补造任何项目参数或规范条文。"
+                "章节数必须由招标要求、项目资料和已通过案例结构共同决定，不得固定为15章。"
+                "输出严格JSON对象。"
+            ),
+            prompt=_task_spec_prompt(state, blueprint, case_outlines),
+            max_tokens=7000,
+        )
+        proposed = result.get("sections", []) if isinstance(result, dict) else []
+        rationale = str(result.get("rationale", "")).strip()
+        source = "deepseek_evidence_and_case_match"
+    if not proposed:
+        titles = next(
+            (
+                item["titles"]
+                for item in case_outlines
+                if 4 <= len(item.get("titles", [])) <= 15
+            ),
+            [],
+        )
+        if titles:
+            proposed = [{"title": title} for title in titles]
+            source = "matched_case_outline"
+            rationale = "采用已启用案例的一级目录作为建议起点，并按本项目证据重新计算章节依据和缺口。"
+        else:
+            proposed = blueprint.get("sections", [])
+            rationale = "没有可用的稳定案例一级目录，保留公司常用8章蓝图作为可编辑起点。"
+    return _apply_task_spec(
+        run_id,
+        state,
+        proposed,
+        source=source,
+        rationale=rationale,
+        revision_note="根据当前项目资料、招标要求和已启用案例重新生成建议目录",
+    )
+
+
+def update_task_spec(
+    run_id: int,
+    sections: list[dict[str, Any]],
+    *,
+    revision_note: str = "",
+) -> dict[str, Any]:
+    state = get_run_state(run_id)
+    if state is None:
+        raise ValueError(f"production run not found: {run_id}")
+    _ensure_task_spec_editable(state)
+    return _apply_task_spec(
+        run_id,
+        state,
+        sections,
+        source="human_edited",
+        rationale=revision_note.strip() or "人工修订章节结构和每章交付定义。",
+        revision_note=revision_note.strip() or "人工修订任务书",
+    )
+
+
+def _ensure_task_spec_editable(state: dict[str, Any]) -> None:
+    if not state.get("file_roles_confirmed"):
+        raise ValueError("必须先确认项目文件角色")
+    if state.get("status") in {
+        "generating",
+        "partial_draft",
+        "ready_for_assembly",
+        "draft_generated",
+        "reviewed",
+    } or any(section.get("content") for section in state.get("sections", [])):
+        raise ValueError("正文生产已经开始，不能再改任务书；请新建生产任务后调整目录")
+
+
+def _apply_task_spec(
+    run_id: int,
+    state: dict[str, Any],
+    proposed: list[dict[str, Any]],
+    *,
+    source: str,
+    rationale: str,
+    revision_note: str,
+) -> dict[str, Any]:
+    if not isinstance(proposed, list) or not 1 <= len(proposed) <= 30:
+        raise ValueError("任务书章节数必须在1至30章之间")
+    titles: set[str] = set()
+    definitions: list[dict[str, Any]] = []
+    blueprint = state.get("blueprint") or build_blueprint(
+        state.get("project", {}).get("project_type", "水利工程通用")
+    )
+    for index, raw in enumerate(proposed, start=1):
+        if not isinstance(raw, dict):
+            continue
+        title = _clean_section_title(str(raw.get("title", "")))
+        if not title:
+            continue
+        if title in titles:
+            raise ValueError(f"章节名称重复：{title}")
+        titles.add(title)
+        template = _closest_section_template(title, blueprint)
+        definitions.append(
+            {
+                "code": f"{index:02d}",
+                "title": title,
+                "purpose": str(raw.get("purpose", "")).strip()
+                or template.get("purpose", "明确本章响应范围和可检查交付成果。"),
+                "required_inputs": _clean_string_list(
+                    raw.get("required_inputs") or template.get("required_inputs", [])
+                ),
+                "components": _clean_string_list(
+                    raw.get("components") or template.get("components", [])
+                ),
+                "acceptance": _clean_string_list(
+                    raw.get("acceptance") or template.get("acceptance", [])
+                ),
+            }
+        )
+    if not definitions:
+        raise ValueError("任务书没有有效章节")
+    if any(not item["components"] or not item["acceptance"] for item in definitions):
+        raise ValueError("每个章节至少需要一个交付组件和一项完成标准")
+    outline = [
+        {"level": 1, "title": item["title"], "order": index}
+        for index, item in enumerate(definitions, start=1)
+    ]
+    matrix = build_response_matrix(state.get("requirements", {}), outline=outline)
+    _map_standard_sections(state.get("standards", []), definitions)
+    dynamic_blueprint = {
+        **blueprint,
+        "sections": definitions,
+        "version": f"{blueprint.get('version', '1.0')}-task",
+    }
+    sections = _build_sections(
+        dynamic_blueprint,
+        state.get("requirements", {}),
+        matrix,
+        state.get("facts", []),
+        state.get("standards", []),
+        state.get("case_assets", []),
+    )
+    previous_snapshot = [
+        {
+            "code": item.get("code", ""),
+            "title": item.get("title", ""),
+            "purpose": item.get("purpose", ""),
+            "required_inputs": item.get("required_inputs", []),
+            "components": item.get("components", []),
+            "acceptance": item.get("acceptance", []),
+        }
+        for item in state.get("sections", [])
+    ]
+    state.setdefault("task_spec_history", []).append(
+        {
+            "revision": int(state.get("task_spec_revision", 1)),
+            "saved_at": _now(),
+            "source": state.get("task_spec_source", ""),
+            "note": revision_note,
+            "sections": previous_snapshot,
+        }
+    )
+    state["sections"] = sections
+    state["response_matrix"] = matrix
+    state["task_spec_source"] = source
+    state["task_spec_rationale"] = rationale
+    state["task_spec_revision"] = int(state.get("task_spec_revision", 1)) + 1
+    state["task_spec_confirmed_at"] = ""
+    state["task_spec_confirmed_revision"] = None
+    state["stage"] = "编制任务书确认"
+    state["stage_index"] = 6
+    state["status"] = "awaiting_confirmation"
+    state["confirmations"] = [
+        item
+        for item in state.get("confirmations", [])
+        if item.get("category") != "章节输入缺失"
+    ]
+    for section in sections:
+        if section.get("missing_inputs"):
+            state["confirmations"].append(
+                {
+                    "category": "章节输入缺失",
+                    "title": f"{section['title']}尚缺输入",
+                    "detail": "、".join(section["missing_inputs"]),
+                    "severity": "medium",
+                    "affected_sections": [section["title"]],
+                    "status": "open",
+                    "recommended_action": "补充资料或人工确认后再生成正式正文。",
+                }
+            )
+    state["metrics"] = _metrics(
+        state.get("files", []),
+        state.get("requirements", {}),
+        state.get("facts", []),
+        state.get("standards", []),
+        sections,
+        state.get("confirmations", []),
+    )
+    output_dir = Path(state["project"]["project_dir"]) / "outputs"
+    state["reports"] = export_production_reports(state, output_dir)
+    settings = get_settings()
+    with db.db_session(settings.database_path) as conn:
+        _replace_section_entities(conn, run_id, sections)
+    _save_run_state(run_id, state)
+    return state
+
+
+def _task_spec_prompt(
+    state: dict[str, Any],
+    blueprint: dict[str, Any],
+    case_outlines: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "project_type": state.get("project", {}).get("project_type", ""),
+        "tender_requirements": [
+            {
+                "id": item.get("id", ""),
+                "category": item.get("category", ""),
+                "requirement": compact_text(str(item.get("requirement", "")), 320),
+            }
+            for item in state.get("requirements", {}).get("requirements", [])[:100]
+        ],
+        "project_fact_names": list(
+            dict.fromkeys(str(item.get("key", "")) for item in state.get("facts", []))
+        ),
+        "referenced_standards": [
+            f"{item.get('code', '')} {item.get('title', '')}"
+            for item in state.get("standards", [])[:80]
+        ],
+        "matched_case_outlines": case_outlines,
+        "company_compact_start": [
+            item.get("title", "") for item in blueprint.get("sections", [])
+        ],
+        "controlled_reference_modules": [
+            item.get("title", "") for item in blueprint.get("reference_sections", [])
+        ],
+    }
+    return (
+        "请形成建议的一级章节任务书。一般建议5至12章，但必须依据资料决定，"
+        "允许超出；合并或拆分都要保证每项招标要求有落点。历史案例只能借鉴结构，"
+        "不得沿用其中项目参数。每章返回 title、purpose、required_inputs、components、acceptance。"
+        "另返回 rationale，说明为何采用这个章节结构。JSON结构："
+        '{"sections":[{"title":"","purpose":"","required_inputs":[],"components":[],"acceptance":[]}],'
+        '"rationale":""}\n证据摘要：'
+        + json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def _case_outline_candidates(case_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for asset in case_assets:
+        if asset.get("asset_type") != "outline":
+            continue
+        content = asset.get("content")
+        titles = [
+            _clean_section_title(str(item.get("title", "")))
+            for item in content if isinstance(item, dict)
+            if int(item.get("level", 1) or 1) == 1
+        ] if isinstance(content, list) else []
+        titles = [title for title in titles if title]
+        if titles:
+            candidates.append(
+                {
+                    "case_id": asset.get("case_id"),
+                    "case_title": asset.get("case_title", ""),
+                    "titles": titles[:30],
+                }
+            )
+    return candidates
+
+
+def _closest_section_template(title: str, blueprint: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        *blueprint.get("sections", []),
+        *blueprint.get("reference_sections", []),
+    ]
+    if not candidates:
+        return {}
+    title_chars = set(re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", title))
+    return max(
+        candidates,
+        key=lambda item: len(
+            title_chars.intersection(
+                set(re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(item.get("title", ""))))
+            )
+        ),
+    )
+
+
+def _clean_section_title(title: str) -> str:
+    return re.sub(
+        r"^\s*(?:第[一二三四五六七八九十百0-9]+章|[0-9]+(?:\.[0-9]+)*[、.．]?)\s*",
+        "",
+        title,
+    ).strip()[:120]
+
+
+def _clean_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text[:500])
+    return result[:50]
 
 
 def confirm_file_roles(run_id: int) -> dict[str, Any]:

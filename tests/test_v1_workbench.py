@@ -11,8 +11,11 @@ from docx import Document
 from docx.enum.section import WD_ORIENT
 from PIL import Image
 
+from pass_bid_writing import db
+from pass_bid_writing.config import get_settings
 from pass_bid_writing.drawings import build_drawing_registry
 from pass_bid_writing.documents import generate_docx
+from pass_bid_writing.knowledge import load_case_assets
 
 
 class DrawingRegistryTests(unittest.TestCase):
@@ -134,6 +137,58 @@ class WorkbenchApiTests(unittest.TestCase):
         self.assertTrue(config_path.exists())
         self.assertIn(str(Path(self.temp.name) / "data"), str(config_path))
         self.assertIn("PASS_BID_TEXT_MODEL", config_path.read_text(encoding="utf-8"))
+
+    def test_case_distillation_can_be_inspected_corrected_and_disabled(self) -> None:
+        settings = get_settings()
+        with db.db_session(settings.database_path) as conn:
+            case_id = db.create_case_pair(
+                conn,
+                title="待审核案例",
+                project_type="河道治理工程",
+                region="浙江",
+                tags="河道,通过制",
+                tender_path="招标文件.pdf",
+                bid_path="已通过技术标.docx",
+                tender_text="招标要求",
+                bid_text="第一章 施工部署",
+                outline=[{"level": 1, "title": "施工部署", "order": 1}],
+                requirements={},
+                patterns={
+                    "outline": [{"level": 1, "title": "施工部署", "order": 1}],
+                    "scene_terms": ["围堰"],
+                    "reusable_snippets": [{"keyword": "部署", "text": "按区段组织施工。"}],
+                    "style_notes": ["先响应要求再展开措施。"],
+                },
+            )
+        detail = self.client.get(f"/api/cases/{case_id}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["scene_terms"], ["围堰"])
+        saved = self.client.patch(
+            f"/api/cases/{case_id}",
+            json={
+                "outline": [
+                    {"level": 1, "title": "施工总体部署"},
+                    {"level": 1, "title": "主要施工方案"},
+                ],
+                "scene_terms": ["围堰", "导流"],
+                "reusable_snippets": [{"keyword": "导流", "text": "结合项目图纸确定导流顺序。"}],
+                "style_notes": ["逐项响应招标要求。"],
+                "enabled": False,
+                "review_status": "confirmed",
+                "review_notes": "人工已修正目录。",
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        payload = saved.json()
+        self.assertFalse(payload["enabled"])
+        self.assertEqual(len(payload["outline"]), 2)
+        self.assertEqual(payload["review_notes"], "人工已修正目录。")
+        listing = self.client.get("/api/cases").json()
+        self.assertFalse(listing[0]["enabled"])
+        self.assertEqual(
+            load_case_assets(project_type="河道治理工程", requirement_text="围堰导流"),
+            [],
+        )
 
 
 if __name__ == "__main__":
