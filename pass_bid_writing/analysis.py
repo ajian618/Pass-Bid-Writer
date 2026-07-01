@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from .evidence_links import is_reference_only_value, parse_document_reference
 from .text import compact_text, split_meaningful_lines
 
 
@@ -58,13 +59,35 @@ def classify_requirement(line: str) -> str:
     return scores.most_common(1)[0][0]
 
 
-def extract_tender_requirements(text: str, *, source_path: str = "") -> dict[str, Any]:
-    lines = split_meaningful_lines(text)
+def extract_tender_requirements(
+    text: str,
+    *,
+    source_path: str = "",
+    located_blocks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    lines = _located_requirement_lines(text, located_blocks)
     requirements: list[dict[str, Any]] = []
+    reference_links: list[dict[str, Any]] = []
     seen: set[str] = set()
     all_keywords = [kw for keywords in REQUIREMENT_KEYWORDS.values() for kw in keywords]
-    for line_no, line in lines:
+    for line_no, line, page, context in lines:
         if any(keyword in line for keyword in all_keywords) or any(marker in line for marker in MANDATORY_MARKERS):
+            reference = parse_document_reference(line)
+            if reference:
+                reference_links.append(
+                    {
+                        "kind": "requirement_reference",
+                        "category": classify_requirement(line),
+                        "source_path": source_path,
+                        "source_page": page,
+                        "source_line": line_no,
+                        "source_excerpt": compact_text(line, 260),
+                        **reference,
+                        "status": "unresolved",
+                    }
+                )
+                if _is_reference_pointer_line(line):
+                    continue
             key = line[:120]
             if key in seen:
                 continue
@@ -75,23 +98,112 @@ def extract_tender_requirements(text: str, *, source_path: str = "") -> dict[str
                     "category": classify_requirement(line),
                     "requirement": compact_text(line, 260),
                     "source_line": line_no,
+                    "source_page": page,
+                    "source_path": source_path,
+                    "source_context": compact_text(context, 500),
                     "suggested_section": suggest_section(line),
                     "status": "needs_response",
                 }
             )
+    _resolve_requirement_references(reference_links, requirements)
 
     pass_fail_mode = any(item["category"] == "pass_fail" for item in requirements)
+    unresolved_references = [
+        item for item in reference_links if item.get("status") != "resolved"
+    ]
     return {
         "source_path": source_path,
         "detected_mode": "pass_fail" if pass_fail_mode else "unknown",
         "requirement_count": len(requirements),
         "requirements": requirements,
+        "reference_links": reference_links,
         "human_confirmation_items": [
             "确认本项目技术标是否明确为通过制/合格制。",
             "确认暗标、签章、页码、字体、目录、装订等格式要求。",
             "确认工期、质量目标、人员设备、关键水利施工场景是否完整。",
+        ]
+        + [
+            f"核对未解析的招标引用：{item['source_excerpt']}"
+            for item in unresolved_references[:20]
         ],
     }
+
+
+def _located_requirement_lines(
+    text: str,
+    located_blocks: list[dict[str, Any]] | None,
+) -> list[tuple[int, str, int | None, str]]:
+    if not located_blocks:
+        return [
+            (line_no, line, None, line)
+            for line_no, line in split_meaningful_lines(text)
+        ]
+    result: list[tuple[int, str, int | None, str]] = []
+    line_no = 0
+    for block in located_blocks:
+        context = str(block.get("text", ""))
+        for _, line in split_meaningful_lines(context):
+            line_no += 1
+            result.append((line_no, line, block.get("page"), context))
+    return result
+
+
+def _is_reference_pointer_line(line: str) -> bool:
+    value = re.split(r"[：:]", line, maxsplit=1)[-1]
+    return is_reference_only_value(value)
+
+
+def _resolve_requirement_references(
+    reference_links: list[dict[str, Any]],
+    requirements: list[dict[str, Any]],
+) -> None:
+    for reference in reference_links:
+        same_category = [
+            item
+            for item in requirements
+            if item.get("category") == reference.get("category")
+        ]
+        candidates = same_category
+        explicitly_located = False
+        target_page = reference.get("target_page")
+        if target_page is not None:
+            exact = [
+                item for item in candidates if item.get("source_page") == target_page
+            ]
+            if exact:
+                candidates = exact
+                explicitly_located = True
+        target_table = str(reference.get("target_table", ""))
+        if target_table:
+            table_matches = [
+                item
+                for item in candidates
+                if target_table in re.sub(r"\s+", "", str(item.get("source_context", "")))
+            ]
+            if table_matches:
+                candidates = table_matches
+                explicitly_located = True
+        if not candidates or (len(candidates) != 1 and not explicitly_located):
+            continue
+        reference["status"] = "resolved"
+        reference["resolved_requirement_ids"] = [item["id"] for item in candidates]
+        reference["resolved_pages"] = sorted(
+            {
+                item.get("source_page")
+                for item in candidates
+                if item.get("source_page") is not None
+            }
+        )
+        for target in candidates:
+            target.setdefault("reference_chain", []).append(
+                {
+                    "source_path": reference.get("source_path", ""),
+                    "source_page": reference.get("source_page"),
+                    "source_excerpt": reference.get("source_excerpt", ""),
+                    "target_page": target_page,
+                    "target_table": target_table,
+                }
+            )
 
 
 def extract_outline(text: str, max_items: int = 80) -> list[dict[str, Any]]:

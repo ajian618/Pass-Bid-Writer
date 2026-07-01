@@ -63,7 +63,7 @@ git diff
 
 ### 最稳妥的全新安装
 
-如果旧目录非常乱，直接解压 `PassBidWriter-V1.1.0.zip` 到一个新目录，再运行：
+如果旧目录非常乱，直接解压 `PassBidWriter-V1.1.1.zip` 到一个新目录，再运行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -142,7 +142,7 @@ py -3.12 -m pytest -q
 .\build-release.ps1
 ```
 
-发布包生成在 `release\PassBidWriter-V1.1.0.zip`，内含编译前端、Python 源码、`setup.ps1` 和 `start.ps1`。
+发布包生成在 `release\PassBidWriter-V1.1.1.zip`，内含编译前端、Python 源码、`setup.ps1` 和 `start.ps1`。
 
 ## V1 边界
 

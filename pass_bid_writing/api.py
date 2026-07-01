@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
     ensure_storage_dirs(settings)
     db.init_db(settings.database_path)
     recover_interrupted_jobs()
-    app = FastAPI(title="施工组织设计生成台", version="1.1.0")
+    app = FastAPI(title="施工组织设计生成台", version="1.1.1")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -150,7 +150,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "version": "1.1.0",
+            "version": "1.1.1",
             "data_dir": str(settings.data_dir),
             "models": ModelRouter().status(),
         }
@@ -773,6 +773,17 @@ def _refresh_sections_and_metrics(state: dict[str, Any]) -> None:
     )
     metrics["standards_ready"] = ready
     metrics["standards_readiness"] = round(ready / len(standards) * 100) if standards else 100
+    evidence_links = state.get("evidence_links", [])
+    resolved_links = sum(
+        1 for item in evidence_links if item.get("status") == "resolved"
+    )
+    metrics["reference_link_count"] = len(evidence_links)
+    metrics["reference_link_resolved"] = resolved_links
+    metrics["reference_link_readiness"] = (
+        round(resolved_links / len(evidence_links) * 100)
+        if evidence_links
+        else 100
+    )
 
 
 def _resolve_drawing_confirmation(state: dict[str, Any]) -> None:

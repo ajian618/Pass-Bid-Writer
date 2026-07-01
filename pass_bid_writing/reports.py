@@ -127,6 +127,31 @@ def export_production_reports(state: dict[str, Any], output_dir: Path) -> dict[s
                 fact.get("confidence"),
             ]
         )
+    for link in state.get("evidence_links", []):
+        target = " ".join(
+            value
+            for value in (
+                f"第{link.get('target_page')}页" if link.get("target_page") else "",
+                str(link.get("target_table", "")),
+            )
+            if value
+        )
+        basis_rows.append(
+            [
+                "资料引用链",
+                link.get("fact_key") or link.get("category") or link.get("kind"),
+                f"{link.get('source_excerpt', '')}\n→ {target or '目标待定位'}",
+                link.get("source_path"),
+                link.get("source_page"),
+                link.get("status"),
+                link.get("resolved_value")
+                or link.get("resolved_requirement_id")
+                or "、".join(link.get("resolved_requirement_ids", []))
+                or link.get("resolved_page")
+                or "、".join(str(page) for page in link.get("resolved_pages", []))
+                or "",
+            ]
+        )
     for standard in state.get("standards", []):
         basis_rows.append(
             [

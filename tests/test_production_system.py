@@ -13,10 +13,12 @@ from PIL import Image
 from pass_bid_writing.assets import generate_document_assets
 from pass_bid_writing.documents import generate_docx
 from pass_bid_writing.production import (
+    _detect_fact_conflicts,
     _sanitize_generated_structure,
     _validate_review_issues,
     confirm_file_roles,
     confirm_task_spec,
+    extract_project_evidence,
     extract_standards,
     get_run_state,
     prepare_production_project,
@@ -27,7 +29,7 @@ from pass_bid_writing.production import (
 from pass_bid_writing.visual_sources import _render_dxf_preview, analyze_visual_sources
 from pass_bid_writing.knowledge import attach_standard_file
 from pass_bid_writing import db
-from pass_bid_writing.analysis import extract_case_patterns
+from pass_bid_writing.analysis import extract_case_patterns, extract_tender_requirements
 
 
 class ProductionSystemTests(unittest.TestCase):
@@ -46,6 +48,109 @@ class ProductionSystemTests(unittest.TestCase):
         else:
             os.environ["PASS_BID_DATA_DIR"] = self.previous_storage
         self.tempdir.cleanup()
+
+    def test_tender_reference_resolves_to_appendix_fact_without_false_conflict(self) -> None:
+        tender = self.project / "招标文件.pdf"
+        tender.write_bytes(b"%PDF-1.4")
+        blocks = [
+            {
+                "page": 5,
+                "text": "项目名称：详见P12页投标人须知前附表\n工期要求详见第12页附表一",
+            },
+            {
+                "page": 12,
+                "text": "投标人须知前附表 附表一\n项目名称：某河道综合治理工程\n计划总工期：180日历天。",
+            },
+        ]
+        files = [{"path": str(tender), "role": "tender", "is_duplicate": False}]
+        with patch(
+            "pass_bid_writing.production.extract_located_text",
+            return_value=blocks,
+        ):
+            evidence = extract_project_evidence(files)
+
+        names = [item for item in evidence["facts"] if item["key"] == "项目名称"]
+        self.assertEqual(1, len(names))
+        self.assertEqual("某河道综合治理工程", names[0]["value"])
+        self.assertEqual(1, len(names[0]["reference_chain"]))
+        self.assertEqual([], _detect_fact_conflicts(evidence["facts"]))
+        self.assertEqual("resolved", evidence["reference_links"][0]["status"])
+        self.assertEqual(12, evidence["reference_links"][0]["resolved_page"])
+
+    def test_equivalent_fact_mentions_are_merged_but_real_conflict_remains(self) -> None:
+        tender = self.project / "招标文件.pdf"
+        tender.write_bytes(b"%PDF-1.4")
+        blocks = [
+            {"page": 2, "text": "项目名称：某河道综合治理工程"},
+            {"page": 8, "text": "工程名称：某河道综合治理工程"},
+            {"page": 9, "text": "工程名称：另一河道治理工程"},
+        ]
+        with patch(
+            "pass_bid_writing.production.extract_located_text",
+            return_value=blocks,
+        ):
+            evidence = extract_project_evidence(
+                [{"path": str(tender), "role": "tender", "is_duplicate": False}]
+            )
+
+        names = [item for item in evidence["facts"] if item["key"] == "项目名称"]
+        self.assertEqual(2, len(names))
+        merged = next(item for item in names if item["value"] == "某河道综合治理工程")
+        self.assertEqual(2, merged["mention_count"])
+        conflicts = _detect_fact_conflicts(evidence["facts"])
+        self.assertEqual(1, len(conflicts))
+        self.assertEqual("项目名称存在不一致", conflicts[0]["title"])
+        self.assertIn("某河道综合治理工程", conflicts[0]["detail"])
+
+    def test_requirement_pointer_is_linked_to_appendix_requirement(self) -> None:
+        blocks = [
+            {"page": 5, "text": "工期要求详见第12页附表一"},
+            {
+                "page": 12,
+                "text": "附表一\n计划总工期：180日历天。\n关键节点：开工后30日完成施工导流。",
+            },
+        ]
+        result = extract_tender_requirements(
+            "\n".join(item["text"] for item in blocks),
+            source_path=str(self.project / "招标文件.pdf"),
+            located_blocks=blocks,
+        )
+
+        self.assertEqual(1, len(result["reference_links"]))
+        link = result["reference_links"][0]
+        self.assertEqual("resolved", link["status"])
+        self.assertGreaterEqual(len(link["resolved_requirement_ids"]), 1)
+        self.assertFalse(
+            any("详见第12页" in item["requirement"] for item in result["requirements"])
+        )
+        self.assertTrue(
+            any(item.get("reference_chain") for item in result["requirements"])
+        )
+
+    def test_requirement_with_real_value_and_reference_is_not_discarded(self) -> None:
+        blocks = [
+            {
+                "page": 5,
+                "text": "总工期为180日历天，关键节点安排详见第12页附表一。",
+            },
+            {
+                "page": 12,
+                "text": "附表一\n计划总工期：180日历天。\n关键节点：开工后30日完成施工导流。",
+            },
+        ]
+        result = extract_tender_requirements(
+            "\n".join(item["text"] for item in blocks),
+            source_path=str(self.project / "招标文件.pdf"),
+            located_blocks=blocks,
+        )
+
+        self.assertTrue(
+            any(
+                "总工期为180日历天" in item["requirement"]
+                for item in result["requirements"]
+            )
+        )
+        self.assertEqual("resolved", result["reference_links"][0]["status"])
 
     def test_reference_and_evidence_production_flow(self) -> None:
         (self.project / "招标文件.txt").write_text(

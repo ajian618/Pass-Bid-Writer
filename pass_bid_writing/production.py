@@ -21,6 +21,12 @@ from .documents import (
     safe_filename,
 )
 from .drawings import build_drawing_registry, render_confirmed_drawing
+from .evidence_links import (
+    is_reference_only_value,
+    normalize_fact_value,
+    parse_document_reference,
+    strip_reference_tail,
+)
 from .knowledge import canonical_section_title, load_case_assets
 from .model_router import ModelRouter
 from .projects import expand_project_archives, scan_single_project
@@ -97,7 +103,12 @@ def extract_standards(located_blocks: list[dict[str, Any]], source_path: str) ->
 
 
 def extract_project_facts(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return extract_project_evidence(files)["facts"]
+
+
+def extract_project_evidence(files: list[dict[str, Any]]) -> dict[str, Any]:
     facts: list[dict[str, Any]] = []
+    reference_links: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, Any]] = set()
     for file_info in files:
         if file_info.get("is_duplicate"):
@@ -113,8 +124,27 @@ def extract_project_facts(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
             text = str(block.get("text", ""))
             for key, pattern in FACT_PATTERNS:
                 for match in pattern.finditer(text):
-                    value = match.group(1).strip()
+                    raw_value = match.group(1).strip()
                     unit = match.group(2) if match.lastindex and match.lastindex >= 2 else ""
+                    reference = parse_document_reference(match.group(0))
+                    if reference and is_reference_only_value(raw_value):
+                        reference_links.append(
+                            {
+                                "kind": "fact_reference",
+                                "fact_key": key,
+                                "source_path": str(path),
+                                "source_page": block.get("page"),
+                                "source_sheet": block.get("sheet", ""),
+                                "source_cell": block.get("cell", ""),
+                                "source_excerpt": compact_text(match.group(0), 260),
+                                **reference,
+                                "status": "unresolved",
+                            }
+                        )
+                        continue
+                    value = strip_reference_tail(raw_value)
+                    if not value:
+                        continue
                     identity = (key, value, str(path), block.get("page"))
                     if identity in seen:
                         continue
@@ -128,27 +158,150 @@ def extract_project_facts(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             "source_page": block.get("page"),
                             "source_sheet": block.get("sheet", ""),
                             "source_cell": block.get("cell", ""),
-                            "source_excerpt": compact_text(match.group(0), 180),
+                            "source_excerpt": _fact_source_context(text, match.start(), match.end()),
+                            "source_block_excerpt": compact_text(text, 800),
                             "confidence": 0.86,
                             "status": "extracted",
                         }
                     )
-    return facts
+    _resolve_fact_references(facts, reference_links)
+    merged_facts = _merge_equivalent_facts(facts)
+    return {"facts": merged_facts, "reference_links": reference_links}
+
+
+def _fact_source_context(text: str, start: int, end: int) -> str:
+    return compact_text(text[max(0, start - 80) : min(len(text), end + 140)], 320)
+
+
+def _resolve_fact_references(
+    facts: list[dict[str, Any]],
+    reference_links: list[dict[str, Any]],
+) -> None:
+    for reference in reference_links:
+        candidates = [
+            fact
+            for fact in facts
+            if fact.get("key") == reference.get("fact_key")
+            and fact.get("source_path") == reference.get("source_path")
+        ]
+        target_page = reference.get("target_page")
+        if target_page is not None:
+            exact = [
+                fact for fact in candidates if fact.get("source_page") == target_page
+            ]
+            if exact:
+                candidates = exact
+        target_table = str(reference.get("target_table", ""))
+        if target_table:
+            table_matches = [
+                fact
+                for fact in candidates
+                if target_table
+                in re.sub(r"\s+", "", str(fact.get("source_block_excerpt", "")))
+            ]
+            if table_matches:
+                candidates = table_matches
+        normalized_groups = {
+            normalize_fact_value(
+                str(fact.get("key", "")),
+                str(fact.get("value", "")),
+                str(fact.get("unit", "")),
+            )
+            for fact in candidates
+        }
+        if not candidates or len(normalized_groups) != 1:
+            continue
+        target = min(
+            candidates,
+            key=lambda fact: abs(
+                int(fact.get("source_page") or 0) - int(target_page or 0)
+            ),
+        )
+        reference["status"] = "resolved"
+        reference["resolved_value"] = target.get("value", "")
+        reference["resolved_page"] = target.get("source_page")
+        target["status"] = "resolved_reference"
+        target["confidence"] = max(float(target.get("confidence", 0)), 0.95)
+        target.setdefault("reference_chain", []).append(
+            {
+                "source_path": reference.get("source_path", ""),
+                "source_page": reference.get("source_page"),
+                "source_excerpt": reference.get("source_excerpt", ""),
+                "target_page": target_page,
+                "target_table": target_table,
+            }
+        )
+
+
+def _merge_equivalent_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for fact in facts:
+        identity = (
+            str(fact.get("key", "")),
+            normalize_fact_value(
+                str(fact.get("key", "")),
+                str(fact.get("value", "")),
+                str(fact.get("unit", "")),
+            ),
+        )
+        if identity not in groups:
+            groups[identity] = []
+            order.append(identity)
+        groups[identity].append(fact)
+    merged: list[dict[str, Any]] = []
+    for identity in order:
+        items = groups[identity]
+        primary = max(
+            items,
+            key=lambda item: (
+                bool(item.get("reference_chain")),
+                float(item.get("confidence", 0)),
+                bool(item.get("source_page")),
+            ),
+        )
+        primary = dict(primary)
+        source_mentions = [
+            {
+                "source_path": item.get("source_path", ""),
+                "source_page": item.get("source_page"),
+                "source_sheet": item.get("source_sheet", ""),
+                "source_cell": item.get("source_cell", ""),
+                "source_excerpt": item.get("source_excerpt", ""),
+            }
+            for item in items
+        ]
+        primary["source_mentions"] = source_mentions
+        primary["mention_count"] = len(source_mentions)
+        primary["reference_chain"] = [
+            link
+            for item in items
+            for link in item.get("reference_chain", [])
+        ]
+        merged.append(primary)
+    return merged
 
 
 def _detect_fact_conflicts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     values: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for fact in facts:
-        normalized = re.sub(r"\s+", "", f"{fact.get('value', '')}{fact.get('unit', '')}")
+        if not str(fact.get("value", "")).strip():
+            continue
+        normalized = normalize_fact_value(
+            str(fact.get("key", "")),
+            str(fact.get("value", "")),
+            str(fact.get("unit", "")),
+        )
         values.setdefault(fact["key"], {}).setdefault(normalized, []).append(fact)
     conflicts: list[dict[str, Any]] = []
     for key, groups in values.items():
         if len(groups) <= 1:
             continue
         detail = "；".join(
-            f"{value}（{Path(items[0]['source_path']).name}"
+            f"{items[0].get('value', '')}{items[0].get('unit', '')}"
+            f"（{Path(items[0]['source_path']).name}"
             f"{' 第' + str(items[0]['source_page']) + '页' if items[0].get('source_page') else ''}）"
-            for value, items in groups.items()
+            for items in groups.values()
         )
         conflicts.append(
             {
@@ -368,6 +521,41 @@ def _build_confirmations(
     return confirmations
 
 
+def _build_reference_confirmations(
+    reference_links: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    confirmations: list[dict[str, Any]] = []
+    for item in reference_links:
+        if item.get("status") == "resolved":
+            continue
+        target_parts = []
+        if item.get("target_page"):
+            target_parts.append(f"第{item['target_page']}页")
+        if item.get("target_table"):
+            target_parts.append(str(item["target_table"]))
+        target = " ".join(target_parts) or "未明确位置"
+        category = (
+            "项目事实引用待解析"
+            if item.get("kind") == "fact_reference"
+            else "招标要求引用待解析"
+        )
+        confirmations.append(
+            {
+                "category": category,
+                "title": f"未找到引用目标：{item.get('fact_key') or item.get('category', '招标要求')}",
+                "detail": (
+                    f"{item.get('source_excerpt', '')}；指向：{target}。"
+                    "系统未把引用语当作实际项目值。"
+                ),
+                "severity": "high" if item.get("kind") == "fact_reference" else "medium",
+                "affected_sections": ["编制说明及工程概况"],
+                "status": "open",
+                "recommended_action": "核对目标页或附表名称，补充可检索文件后重新分析。",
+            }
+        )
+    return confirmations
+
+
 def prepare_production_project(
     project_dir: str,
     *,
@@ -406,10 +594,18 @@ def prepare_production_project(
     tender_file = sorted(tender_files, key=lambda item: -float(item["confidence"]))[0]
     tender_blocks = extract_located_text(Path(tender_file["path"]))
     tender_text = "\n".join(block["text"] for block in tender_blocks)
-    requirements = extract_tender_requirements(tender_text, source_path=tender_file["path"])
-    _attach_requirement_locations(requirements, tender_blocks)
+    requirements = extract_tender_requirements(
+        tender_text,
+        source_path=tender_file["path"],
+        located_blocks=tender_blocks,
+    )
     matrix = build_response_matrix(requirements)
-    facts = extract_project_facts(project["files"])
+    project_evidence = extract_project_evidence(project["files"])
+    facts = project_evidence["facts"]
+    evidence_links = [
+        *requirements.get("reference_links", []),
+        *project_evidence.get("reference_links", []),
+    ]
     standards = extract_standards(tender_blocks, tender_file["path"])
     blueprint = build_blueprint(project_type)
     _map_standard_sections(standards, blueprint["sections"])
@@ -426,6 +622,7 @@ def prepare_production_project(
         project["files"],
         case_assets,
     )
+    confirmations.extend(_build_reference_confirmations(evidence_links))
     model_router = ModelRouter()
     visual_jobs = build_visual_jobs(project["files"], project_root=project_path)
     drawings, drawing_confirmations = build_drawing_registry(project["files"])
@@ -446,6 +643,7 @@ def prepare_production_project(
         "requirements": requirements,
         "response_matrix": matrix,
         "facts": facts,
+        "evidence_links": evidence_links,
         "standards": standards,
         "standard_clauses": [],
         "blueprint": blueprint,
@@ -470,7 +668,15 @@ def prepare_production_project(
         "confirmations": confirmations,
         "model_differences": [],
         "models": model_router.status(),
-        "metrics": _metrics(project["files"], requirements, facts, standards, sections, confirmations),
+        "metrics": _metrics(
+            project["files"],
+            requirements,
+            facts,
+            standards,
+            sections,
+            confirmations,
+            evidence_links,
+        ),
         "created_at": _now(),
     }
     validate_core_state(state)
@@ -772,6 +978,7 @@ def _metrics(
     standards: list[dict[str, Any]],
     sections: list[dict[str, Any]],
     confirmations: list[dict[str, Any]],
+    evidence_links: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     requirement_count = len(requirements.get("requirements", []))
     requirement_texts = {
@@ -790,6 +997,10 @@ def _metrics(
         1 for standard in standards if standard["status"] in {"available", "not_applicable"}
     )
     avg_completion = round(sum(section["completion"] for section in sections) / max(len(sections), 1))
+    evidence_links = evidence_links or []
+    resolved_links = sum(
+        1 for item in evidence_links if item.get("status") == "resolved"
+    )
     return {
         "requirement_count": requirement_count,
         "requirement_coverage": min(100, round(covered / max(requirement_count, 1) * 100)),
@@ -802,6 +1013,13 @@ def _metrics(
         "chapter_completion": avg_completion,
         "open_confirmations": sum(1 for item in confirmations if item["status"] == "open"),
         "high_risks": sum(1 for item in confirmations if item["severity"] == "high"),
+        "reference_link_count": len(evidence_links),
+        "reference_link_resolved": resolved_links,
+        "reference_link_readiness": (
+            round(resolved_links / len(evidence_links) * 100)
+            if evidence_links
+            else 100
+        ),
     }
 
 
@@ -1122,6 +1340,7 @@ def _apply_task_spec(
         state.get("standards", []),
         sections,
         state.get("confirmations", []),
+        state.get("evidence_links", []),
     )
     output_dir = Path(state["project"]["project_dir"]) / "outputs"
     state["reports"] = export_production_reports(state, output_dir)

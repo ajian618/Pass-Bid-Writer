@@ -380,7 +380,7 @@ function Sources({ data, setData, action, busy, notify }) {
       <section className="panel">
         {tab === "files" && <div className="table-wrap"><table><thead><tr><th>文件</th><th>角色</th><th>状态</th><th>来源</th></tr></thead><tbody>{(data.files || []).map((f) => <tr key={f.path}><td><strong>{f.name}</strong><small>{f.suffix?.toUpperCase()} · {f.size ? `${Math.round(f.size / 1024)} KB` : ""}</small></td><td><select className="role-select" value={f.role} onChange={(e) => roleChange(f, e.target.value)}>{Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></td><td><StatusPill value={f.is_duplicate ? "duplicate" : "ready"} /></td><td><a href={fileUrl(f.path)} target="_blank">查看原件</a></td></tr>)}</tbody></table></div>}
         {tab === "standards" && <div className="table-wrap"><table><thead><tr><th>编号</th><th>标准名称</th><th>招标引用</th><th>状态</th></tr></thead><tbody>{(data.standards || []).map((s) => <tr key={`${s.code}-${s.title}`}><td>{s.code || "待核对"}</td><td><strong>{s.title}</strong><small>{s.version || "版本待确认"}</small></td><td>{s.source_page ? `第 ${s.source_page} 页` : "未定位页码"}</td><td><StatusPill value={s.status} /></td></tr>)}</tbody></table></div>}
-        {tab === "facts" && <div className="table-wrap"><table><thead><tr><th>事实</th><th>取值</th><th>来源</th><th>置信度</th></tr></thead><tbody>{(data.facts || []).map((f, i) => <tr key={`${f.key}-${i}`}><td>{f.key}</td><td><strong>{f.value} {f.unit}</strong></td><td>{f.source_path === "人工确认" ? "人工确认" : `${f.source_path?.split(/[\\/]/).pop() || ""}${f.source_page ? ` · 第${f.source_page}页` : ""}`}</td><td>{Math.round((f.confidence || 0) * 100)}%</td></tr>)}</tbody></table></div>}
+        {tab === "facts" && <div className="table-wrap"><table><thead><tr><th>事实</th><th>取值</th><th>来源</th><th>置信度</th></tr></thead><tbody>{(data.facts || []).map((f, i) => <tr key={`${f.key}-${i}`}><td>{f.key}</td><td><strong>{f.value} {f.unit}</strong>{f.mention_count > 1 && <small>已合并 {f.mention_count} 处一致表述</small>}</td><td>{f.source_path === "人工确认" ? "人工确认" : `${f.source_path?.split(/[\\/]/).pop() || ""}${f.source_page ? ` · 第${f.source_page}页` : ""}`}{f.reference_chain?.length > 0 && <small className="reference-resolved">已解析正文 → 附表引用（{f.reference_chain.length} 条）</small>}</td><td>{Math.round((f.confidence || 0) * 100)}%</td></tr>)}</tbody></table></div>}
       </section>
       <div className="footer-actions"><button className="button primary" disabled={busy || !data.run_id} onClick={() => action("analyze-visuals")}><ImageSquare size={18} />运行千问视觉分析</button><span>DWG 只保存，不会送入模型；必须先提供对应 PDF。</span></div>
     </div>
@@ -561,17 +561,31 @@ function Chapters({ data, action, busy }) {
 
 function ReviewModal({ item, index, onClose, onSaved, runId }) {
   const [form, setForm] = useState({ status: "resolved", resolution: "", fact_key: "", value: "", unit: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   if (!item) return null;
   const save = async (event) => {
     event.preventDefault();
-    const state = await api(`/api/runs/${runId}/review-items/${index}`, { method: "PATCH", body: JSON.stringify(form) });
-    onSaved(state); onClose();
+    setSaving(true); setError("");
+    try {
+      const state = await api(`/api/runs/${runId}/review-items/${index}`, { method: "PATCH", body: JSON.stringify(form) });
+      onSaved(state); onClose();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
   };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal" onMouseDown={(e) => e.stopPropagation()}><header><div><h2>{item.title}</h2><p>{item.detail}</p></div><button className="icon-button" onClick={onClose}><X /></button></header><form onSubmit={save}>
-    <label>处理结论<textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} required /></label>
-    <div className="form-row"><label>状态<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="resolved">已解决</option><option value="dismissed">不适用/忽略</option><option value="open">仍待处理</option></select></label><label>事实名称（可选）<input value={form.fact_key} onChange={(e) => setForm({ ...form, fact_key: e.target.value })} /></label></div>
-    <div className="form-row"><label>人工确认值<input value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} /></label><label>单位<input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></label></div>
-    <footer><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary">保存复核结果</button></footer></form></section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal review-modal" onMouseDown={(e) => e.stopPropagation()}><header><div><h2>{item.title}</h2><p>{item.category} · {item.severity === "high" ? "高风险" : "待人工判断"}</p></div><button aria-label="关闭复核编辑" className="icon-button" onClick={onClose}><X /></button></header><form className="review-modal-form" onSubmit={save}>
+    <div className="review-modal-body">
+      <div className={`review-context ${item.severity || ""}`}><strong>系统发现</strong><p>{item.detail}</p>{item.recommended_action && <><strong>建议处理</strong><p>{item.recommended_action}</p></>}</div>
+      <label>处理结论<textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} placeholder="说明核对了哪份资料、最终采用什么结论。" required /></label>
+      <div className="form-row"><label>状态<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="resolved">已解决</option><option value="dismissed">不适用/忽略</option><option value="open">仍待处理</option></select></label><label>事实名称（可选）<input value={form.fact_key} onChange={(e) => setForm({ ...form, fact_key: e.target.value })} /></label></div>
+      <div className="form-row"><label>人工确认值<input value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} /></label><label>单位<input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></label></div>
+      {error && <div className="form-error">{error}</div>}
+    </div>
+    <footer><span>保存后会重新计算章节缺口和风险数量。</span><div><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={saving}>{saving ? "保存中…" : "保存复核结果"}</button></div></footer>
+  </form></section></div>;
 }
 
 function Review({ data, setData, action, busy }) {
