@@ -22,7 +22,6 @@ exports/
 tmp/
 temp/
 workbench/node_modules/
-workbench/dist/
 workbench/.npm-cache/
 release/
 

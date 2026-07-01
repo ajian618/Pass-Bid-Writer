@@ -33,6 +33,46 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 浏览器打开 `http://127.0.0.1:8000`。日常启动不会联网下载依赖。
 
+## 从旧 Hermes 版本升级
+
+旧版删除了大量已跟踪文件，因此升级前先看工作区是否存在本地修改。不要使用 `git reset --hard`。
+
+### Git 工作区无本地修改
+
+```powershell
+cd C:\Users\taizhoushuijia\Documents\Pass-Bid-Writer
+git status --short
+git pull --ff-only origin main
+Set-ExecutionPolicy -Scope Process Bypass
+.\update.ps1 -SkipPull -CleanLegacyWorkspace
+.\start.ps1
+```
+
+`-CleanLegacyWorkspace` 会删除仓库内旧 `.venv`、`storage`、`projects`、Hermes 缓存和前端依赖。只在旧资料已有备份时使用。它不会删除 `%LOCALAPPDATA%\PassBidWriter` 中的新 V1 数据。
+
+### `git status --short` 有输出
+
+先备份修改，再查看差异：
+
+```powershell
+git status --short
+git diff
+```
+
+保留需要的文件后再执行 `git pull --ff-only origin main`。Git 的已跟踪文件冲突不是 `.gitignore` 导致的；升级脚本不会替你执行强制重置。
+
+### 最稳妥的全新安装
+
+如果旧目录非常乱，直接解压 `PassBidWriter-V1.0.0.zip` 到一个新目录，再运行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\setup.ps1
+.\start.ps1
+```
+
+V1 不迁移旧数据库、旧学习数据和旧成果。旧目录可以保留为只读备份。
+
 第一次进入工作台后，在右上角“模型配置”中填写：
 
 - DeepSeek API Key：章节正文、任务书归纳和文字复核；

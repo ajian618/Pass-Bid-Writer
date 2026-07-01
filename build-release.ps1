@@ -36,9 +36,11 @@ Copy-Item -LiteralPath (Join-Path $root "pass_bid_writing") -Destination $packag
 Copy-Item -LiteralPath (Join-Path $root "requirements.txt") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $root "AGENTS.md") -Destination $packageDir
+Copy-Item -LiteralPath (Join-Path $root "V1_ACCEPTANCE.md") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $root ".env.example") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $root "setup.ps1") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $root "start.ps1") -Destination $packageDir
+Copy-Item -LiteralPath (Join-Path $root "update.ps1") -Destination $packageDir
 New-Item -ItemType Directory -Force -Path (Join-Path $packageDir "workbench") | Out-Null
 Copy-Item -LiteralPath (Join-Path $workbench "dist") -Destination (Join-Path $packageDir "workbench") -Recurse
 
